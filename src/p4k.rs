@@ -69,7 +69,23 @@ pub struct P4kEntry {
     /// Offset to local file header in the archive
     pub(crate) header_offset: u64,
     /// Offset to file data in the archive
+    #[allow(dead_code)]
     pub(crate) data_offset: u64,
+    /// Original extra data from central directory (for incremental writes)
+    pub(crate) extra_data: Vec<u8>,
+    /// General purpose bit flags
+    pub(crate) flags: u16,
+    /// Version made by
+    pub(crate) version_made: u16,
+    /// Version needed to extract
+    #[allow(dead_code)]
+    pub(crate) version_needed: u16,
+    /// Modification time (DOS format)
+    pub(crate) mod_time: u16,
+    /// Modification date (DOS format)
+    pub(crate) mod_date: u16,
+    /// External file attributes
+    pub(crate) external_attrs: u32,
 }
 
 /// A P4K archive reader
@@ -77,6 +93,8 @@ pub struct P4kFile {
     reader: BufReader<File>,
     entries: HashMap<String, P4kEntry>,
     entry_list: Vec<String>,
+    /// Offset to the central directory
+    cd_offset: u64,
 }
 
 impl P4kFile {
@@ -96,13 +114,14 @@ impl P4kFile {
         let mut reader = BufReader::new(file);
         
         // Read central directory
-        let entries = Self::read_central_directory(&mut reader)?;
+        let (entries, cd_offset) = Self::read_central_directory(&mut reader)?;
         let entry_list: Vec<String> = entries.keys().cloned().collect();
         
         Ok(P4kFile {
             reader,
             entries,
             entry_list,
+            cd_offset,
         })
     }
 
@@ -124,6 +143,11 @@ impl P4kFile {
     /// Check if the archive is empty
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+    
+    /// Get the offset to the central directory
+    pub fn central_directory_offset(&self) -> u64 {
+        self.cd_offset
     }
 
     /// Get a specific entry by name
@@ -148,8 +172,12 @@ impl P4kFile {
 
     /// Extract an entry and return its contents
     pub fn extract_entry(&mut self, entry: &P4kEntry) -> Result<Vec<u8>> {
+        // Read the local file header to get the actual data offset
+        // (local header's extra field length may differ from central directory's)
+        let data_offset = self.read_local_header_offset(entry)?;
+        
         // Seek to data offset
-        self.reader.seek(SeekFrom::Start(entry.data_offset))?;
+        self.reader.seek(SeekFrom::Start(data_offset))?;
 
         // Read compressed data
         let mut compressed_data = vec![0u8; entry.compressed_size as usize];
@@ -215,7 +243,8 @@ impl P4kFile {
     }
 
     /// Read the central directory to build the entry index
-    fn read_central_directory(reader: &mut BufReader<File>) -> Result<HashMap<String, P4kEntry>> {
+    /// Returns (entries, cd_offset)
+    fn read_central_directory(reader: &mut BufReader<File>) -> Result<(HashMap<String, P4kEntry>, u64)> {
         // Find End of Central Directory record
         let file_len = reader.seek(SeekFrom::End(0))?;
         
@@ -286,7 +315,7 @@ impl P4kFile {
             pos = reader.stream_position()? - cd_offset;
         }
 
-        Ok(entries)
+        Ok((entries, cd_offset))
     }
 
     fn read_standard_eocd(reader: &mut BufReader<File>, eocd_pos: u64) -> Result<(u64, u64, u64)> {
@@ -313,12 +342,12 @@ impl P4kFile {
             return Ok(None);
         }
 
-        let _version_made = reader.read_u16::<LittleEndian>()?;
-        let _version_needed = reader.read_u16::<LittleEndian>()?;
+        let version_made = reader.read_u16::<LittleEndian>()?;
+        let version_needed = reader.read_u16::<LittleEndian>()?;
         let flags = reader.read_u16::<LittleEndian>()?;
         let compression = reader.read_u16::<LittleEndian>()?;
-        let _mod_time = reader.read_u16::<LittleEndian>()?;
-        let _mod_date = reader.read_u16::<LittleEndian>()?;
+        let mod_time = reader.read_u16::<LittleEndian>()?;
+        let mod_date = reader.read_u16::<LittleEndian>()?;
         let crc32 = reader.read_u32::<LittleEndian>()?;
         let mut compressed_size = reader.read_u32::<LittleEndian>()? as u64;
         let mut uncompressed_size = reader.read_u32::<LittleEndian>()? as u64;
@@ -327,7 +356,7 @@ impl P4kFile {
         let comment_len = reader.read_u16::<LittleEndian>()?;
         let _disk_start = reader.read_u16::<LittleEndian>()?;
         let _internal_attrs = reader.read_u16::<LittleEndian>()?;
-        let _external_attrs = reader.read_u32::<LittleEndian>()?;
+        let external_attrs = reader.read_u32::<LittleEndian>()?;
         let mut header_offset = reader.read_u32::<LittleEndian>()? as u64;
 
         // Read name
@@ -384,8 +413,10 @@ impl P4kFile {
             is_encrypted = true;
         }
         
-        // Calculate data offset (need to read local file header)
-        let data_offset = header_offset + 30 + name_len as u64 + extra_len as u64;
+        // Note: data_offset will be calculated later by reading the local file header
+        // because the local header's extra field length may differ from the central directory's
+        // We store 0 here as a placeholder, it will be updated in extract_entry
+        let data_offset = 0;
 
         Ok(Some(P4kEntry {
             name,
@@ -396,6 +427,13 @@ impl P4kFile {
             crc32,
             header_offset,
             data_offset,
+            extra_data: extra,
+            flags,
+            version_made,
+            version_needed,
+            mod_time,
+            mod_date,
+            external_attrs,
         }))
     }
 

@@ -64,7 +64,7 @@ pub fn decrypt_aes_cbc(data: &[u8]) -> Result<Vec<u8>> {
 /// # Returns
 /// Encrypted data padded to 16-byte boundary
 pub fn encrypt_aes_cbc(data: &[u8]) -> Result<Vec<u8>> {
-    use aes::cipher::block_padding::Pkcs7;
+    use aes::cipher::block_padding::ZeroPadding;
     
     if data.is_empty() {
         return Ok(Vec::new());
@@ -75,13 +75,13 @@ pub fn encrypt_aes_cbc(data: &[u8]) -> Result<Vec<u8>> {
 
     let cipher = Aes128CbcEnc::new(&P4K_KEY.into(), &iv.into());
 
-    // Pad to 16-byte boundary
+    // Pad to 16-byte boundary with zero padding (matching P4K format)
     let padded_len = data.len().div_ceil(16) * 16;
     let mut buffer = vec![0u8; padded_len];
     buffer[..data.len()].copy_from_slice(data);
 
     let encrypted = cipher
-        .encrypt_padded_mut::<Pkcs7>(&mut buffer, data.len())
+        .encrypt_padded_mut::<ZeroPadding>(&mut buffer, padded_len)
         .map_err(|e| Error::Decryption(format!("AES encryption failed: {:?}", e)))?;
 
     Ok(encrypted.to_vec())
