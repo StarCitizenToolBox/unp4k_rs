@@ -2,6 +2,9 @@
 
 A Rust implementation of [unp4k](https://github.com/dolkensp/unp4k) - a tool for extracting and modifying Star Citizen `.p4k` files.
 
+> [!NOTE]
+> The p4k editing feature is experimental. Currently, editing can be successful, but the game will not pass verification.
+
 ## Features
 
 - 📦 Open and extract Star Citizen `.p4k` archives
