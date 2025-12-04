@@ -95,6 +95,8 @@ pub struct P4kFile {
     entry_list: Vec<String>,
     /// Offset to the central directory
     cd_offset: u64,
+    /// Original EOCD comment (for Star Citizen validation)
+    eocd_comment: Vec<u8>,
 }
 
 impl P4kFile {
@@ -114,7 +116,7 @@ impl P4kFile {
         let mut reader = BufReader::new(file);
         
         // Read central directory
-        let (entries, cd_offset) = Self::read_central_directory(&mut reader)?;
+        let (entries, cd_offset, eocd_comment) = Self::read_central_directory(&mut reader)?;
         let entry_list: Vec<String> = entries.keys().cloned().collect();
         
         Ok(P4kFile {
@@ -122,6 +124,7 @@ impl P4kFile {
             entries,
             entry_list,
             cd_offset,
+            eocd_comment,
         })
     }
 
@@ -148,6 +151,11 @@ impl P4kFile {
     /// Get the offset to the central directory
     pub fn central_directory_offset(&self) -> u64 {
         self.cd_offset
+    }
+
+    /// Get the EOCD comment (contains Star Citizen "CIG" validation data)
+    pub fn eocd_comment(&self) -> &[u8] {
+        &self.eocd_comment
     }
 
     /// Get a specific entry by name
@@ -243,8 +251,8 @@ impl P4kFile {
     }
 
     /// Read the central directory to build the entry index
-    /// Returns (entries, cd_offset)
-    fn read_central_directory(reader: &mut BufReader<File>) -> Result<(HashMap<String, P4kEntry>, u64)> {
+    /// Returns (entries, cd_offset, eocd_comment)
+    fn read_central_directory(reader: &mut BufReader<File>) -> Result<(HashMap<String, P4kEntry>, u64, Vec<u8>)> {
         // Find End of Central Directory record
         let file_len = reader.seek(SeekFrom::End(0))?;
         
@@ -315,7 +323,17 @@ impl P4kFile {
             pos = reader.stream_position()? - cd_offset;
         }
 
-        Ok((entries, cd_offset))
+        // Read EOCD comment
+        // EOCD structure: signature(4) + disk_num(2) + disk_cd(2) + entries_on_disk(2) + 
+        //                 total_entries(2) + cd_size(4) + cd_offset(4) + comment_len(2) + comment
+        reader.seek(SeekFrom::Start(eocd_pos + 20))?;
+        let comment_len = reader.read_u16::<LittleEndian>()?;
+        let mut eocd_comment = vec![0u8; comment_len as usize];
+        if comment_len > 0 {
+            reader.read_exact(&mut eocd_comment)?;
+        }
+
+        Ok((entries, cd_offset, eocd_comment))
     }
 
     fn read_standard_eocd(reader: &mut BufReader<File>, eocd_pos: u64) -> Result<(u64, u64, u64)> {

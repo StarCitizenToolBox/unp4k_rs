@@ -366,6 +366,7 @@ fn show_info(p4k_path: &Path) -> Result<()> {
         .with_context(|| format!("Failed to open {}", p4k_path.display()))?;
     
     let entries = p4k.entries();
+    let eocd_comment = p4k.eocd_comment();
     
     let mut total_size = 0u64;
     let mut compressed_size = 0u64;
@@ -411,6 +412,23 @@ fn show_info(p4k_path: &Path) -> Result<()> {
     println!("Encryption:");
     println!("  Encrypted: {} files", encrypted_count);
     println!("  Plain: {} files", entries.len() as u64 - encrypted_count);
+    println!();
+    println!("EOCD Comment ({} bytes):", eocd_comment.len());
+    if eocd_comment.is_empty() {
+        println!("  (none)");
+    } else {
+        // Display hex dump
+        print!("  Hex: ");
+        for byte in eocd_comment {
+            print!("{:02X} ", byte);
+        }
+        println!();
+        // Display ASCII (printable chars only)
+        let ascii: String = eocd_comment.iter()
+            .map(|&b| if b >= 0x20 && b < 0x7F { b as char } else { '.' })
+            .collect();
+        println!("  ASCII: {}", ascii);
+    }
     
     Ok(())
 }

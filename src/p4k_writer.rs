@@ -76,6 +76,8 @@ pub struct P4kWriter {
     writer: BufWriter<File>,
     entries: Vec<WrittenEntry>,
     options: P4kWriteOptions,
+    /// EOCD comment (for Star Citizen "CIG" validation)
+    eocd_comment: Vec<u8>,
 }
 
 /// Information about a written entry (for central directory)
@@ -117,7 +119,13 @@ impl P4kWriter {
             writer,
             entries: Vec::new(),
             options,
+            eocd_comment: Vec::new(),
         })
+    }
+
+    /// Set the EOCD comment (for preserving Star Citizen "CIG" validation)
+    pub fn set_eocd_comment(&mut self, comment: Vec<u8>) {
+        self.eocd_comment = comment;
     }
 
     /// Add an entry to the archive
@@ -528,8 +536,11 @@ impl P4kWriter {
             self.writer.write_u32::<LittleEndian>(cd_offset as u32)?;
         }
         
-        // Comment length
-        self.writer.write_u16::<LittleEndian>(0)?;
+        // Comment (Star Citizen uses this for "CIG" validation)
+        self.writer.write_u16::<LittleEndian>(self.eocd_comment.len() as u16)?;
+        if !self.eocd_comment.is_empty() {
+            self.writer.write_all(&self.eocd_comment)?;
+        }
 
         Ok(())
     }
@@ -582,6 +593,47 @@ pub struct P4kModifier {
     deletions: Vec<String>,
     /// Write options
     options: P4kWriteOptions,
+    /// Original EOCD comment (contains Star Citizen "CIG" validation data)
+    eocd_comment: Vec<u8>,
+}
+
+/// Parse the Star Citizen P4K validation tables info from EOCD comment
+/// 
+/// EOCD comment structure (16 bytes):
+/// - Bytes 0-2: "CIG" signature
+/// - Byte 3: 0x00
+/// - Bytes 4-5: version (u16 LE)
+/// - Bytes 6-7: sector size (u16 LE) 
+/// - Bytes 8-15: 16-byte table count (u64 LE)
+/// 
+/// Returns: (sector_size, table16_count)
+fn parse_cig_comment(comment: &[u8]) -> Option<(u16, u64)> {
+    if comment.len() < 16 {
+        return None;
+    }
+    // Check CIG signature
+    if &comment[0..3] != b"CIG" {
+        return None;
+    }
+    let sector_size = u16::from_le_bytes([comment[6], comment[7]]);
+    let table16_count = u64::from_le_bytes([
+        comment[8], comment[9], comment[10], comment[11],
+        comment[12], comment[13], comment[14], comment[15],
+    ]);
+    Some((sector_size, table16_count))
+}
+
+/// Create a modified EOCD comment with validation tables disabled
+/// Sets the 16-byte table count to 0 to skip validation
+fn create_disabled_validation_comment(original: &[u8]) -> Vec<u8> {
+    let mut comment = original.to_vec();
+    if comment.len() >= 16 && &comment[0..3] == b"CIG" {
+        // Set bytes 8-15 (table count) to 0
+        for i in 8..16 {
+            comment[i] = 0;
+        }
+    }
+    comment
 }
 
 impl P4kModifier {
@@ -589,12 +641,14 @@ impl P4kModifier {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let source_path = path.as_ref().to_path_buf();
         let source = P4kFile::open(path)?;
+        let eocd_comment = source.eocd_comment().to_vec();
         Ok(Self {
             source_path,
             source,
             modifications: HashMap::new(),
             deletions: Vec::new(),
             options: P4kWriteOptions::default(),
+            eocd_comment,
         })
     }
 
@@ -618,6 +672,10 @@ impl P4kModifier {
     /// Write the modified archive to a new file (full rewrite)
     pub fn save<P: AsRef<Path>>(mut self, output: P) -> Result<()> {
         let mut writer = P4kWriter::create_with_options(output, self.options.clone())?;
+        
+        // Use modified EOCD comment with validation tables disabled
+        let modified_comment = create_disabled_validation_comment(&self.eocd_comment);
+        writer.set_eocd_comment(modified_comment);
 
         // Copy existing entries (except deleted/modified ones)
         let entries: Vec<_> = self.source.entries().into_iter().cloned().collect();
@@ -657,12 +715,30 @@ impl P4kModifier {
     /// as it only rewrites the central directory.
     /// 
     /// For add/replace operations, new data is appended before the central directory.
+    /// 
+    /// Note: Star Citizen P4K files have validation tables before CD. We regenerate
+    /// the 12-byte table from CD entries and skip the 16-byte table.
     pub fn save_incremental(self) -> Result<()> {
         use std::fs::OpenOptions;
         use std::io::{BufWriter, Write};
         
         // Get central directory info from source
         let cd_offset = self.source.central_directory_offset();
+        let entry_count = self.source.len() as u64;
+        
+        // Calculate the offset where to start writing
+        // P4K has: [file data...][16-byte table][12-byte table][CD][ZIP64][EOCD]
+        // We skip both tables and regenerate the 12-byte table from CD entries
+        // The 16-byte table count is stored in EOCD comment bytes 8-15
+        let write_offset = if let Some((_, table16_count)) = parse_cig_comment(&self.eocd_comment) {
+            // Calculate: skip both tables
+            let table12_size = 12 * entry_count;
+            let table16_size = 16 * table16_count;
+            cd_offset.saturating_sub(table12_size).saturating_sub(table16_size)
+        } else {
+            // No CIG comment, use CD offset directly
+            cd_offset
+        };
         
         // Collect entries to keep
         let entries: Vec<_> = self.source.entries().into_iter().cloned().collect();
@@ -697,18 +773,21 @@ impl P4kModifier {
             });
         }
         
+        // Create modified EOCD comment with 16-byte table disabled (count = 0)
+        let modified_comment = create_disabled_validation_comment(&self.eocd_comment);
+        
         // Drop the source to release the file handle
         drop(self.source);
         
-        // Open file for writing (append mode)
+        // Open file for writing
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .open(&self.source_path)?;
         let mut writer = BufWriter::new(file);
         
-        // Seek to where central directory was (this is where we'll write new data)
-        writer.seek(SeekFrom::Start(cd_offset))?;
+        // Seek to write position (after 16-byte table is skipped)
+        writer.seek(SeekFrom::Start(write_offset))?;
         
         // If there are modifications, write new entries
         let mut new_entries: Vec<WrittenEntry> = Vec::new();
@@ -767,6 +846,30 @@ impl P4kModifier {
         // Combine all entries
         kept_entries.extend(new_entries);
         
+        // Generate the 12-byte validation table from kept entries
+        // Each entry: 8 bytes (extra[12]) + 4 bytes (zeros)
+        // This table is validated by game: table[i*12..i*12+8] must equal CD_entry[i].extra[12..20]
+        let mut table12_new: Vec<u8> = Vec::with_capacity(kept_entries.len() * 12);
+        for entry in &kept_entries {
+            if let Some(ref extra) = entry.extra_data {
+                if extra.len() >= 20 {
+                    // Copy bytes 12-19 from extra field (the validation QWORD)
+                    table12_new.extend_from_slice(&extra[12..20]);
+                    // Add 4 zero bytes
+                    table12_new.extend_from_slice(&[0u8; 4]);
+                } else {
+                    // Extra field too short, use zeros
+                    table12_new.extend_from_slice(&[0u8; 12]);
+                }
+            } else {
+                // No extra data, use zeros
+                table12_new.extend_from_slice(&[0u8; 12]);
+            }
+        }
+        
+        // Write the 12-byte validation table
+        writer.write_all(&table12_new)?;
+        
         // Write new central directory
         let new_cd_offset = writer.stream_position()?;
         for entry in &kept_entries {
@@ -783,8 +886,8 @@ impl P4kModifier {
             write_zip64_end(&mut writer, new_cd_offset, new_cd_size, kept_entries.len())?;
         }
         
-        // Write end of central directory
-        write_end_of_central_directory(&mut writer, new_cd_offset, new_cd_size, kept_entries.len(), use_zip64)?;
+        // Write end of central directory with modified comment (validation tables disabled)
+        write_end_of_central_directory(&mut writer, new_cd_offset, new_cd_size, kept_entries.len(), use_zip64, &modified_comment)?;
         
         // Truncate file to current position (remove old data after new EOCD)
         let final_pos = writer.stream_position()?;
@@ -1030,7 +1133,8 @@ fn write_end_of_central_directory<W: Write + Seek>(
     cd_offset: u64, 
     cd_size: u64, 
     entry_count: usize,
-    use_zip64: bool
+    use_zip64: bool,
+    comment: &[u8],
 ) -> Result<()> {
     writer.write_all(&[0x50, 0x4B, 0x05, 0x06])?;
     writer.write_u16::<LittleEndian>(0)?;
@@ -1056,7 +1160,11 @@ fn write_end_of_central_directory<W: Write + Seek>(
         writer.write_u32::<LittleEndian>(cd_offset as u32)?;
     }
     
-    writer.write_u16::<LittleEndian>(0)?; // comment length
+    // Write comment (Star Citizen uses this for "CIG" validation)
+    writer.write_u16::<LittleEndian>(comment.len() as u16)?;
+    if !comment.is_empty() {
+        writer.write_all(comment)?;
+    }
 
     Ok(())
 }
