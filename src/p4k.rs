@@ -2,6 +2,13 @@
 //!
 //! P4K files are ZIP archives with custom encryption and compression support.
 //! This module provides reading and extraction capabilities.
+//!
+//! ## P4K Format Details (from unp4k issue #49)
+//!
+//! - Compression methods: Store (0), Deflate (8), ZStd (100)
+//! - Encryption: AES-128-CBC with CryEngine public key
+//! - Local header signature for encrypted entries: `PK\x03\x14` (vs `PK\x03\x04` for normal)
+//! - ExtraData field 168 indicates encrypted content
 
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom, Cursor};
@@ -10,6 +17,15 @@ use std::collections::HashMap;
 use byteorder::{LittleEndian, ReadBytesExt};
 use crate::crypto::{decrypt_aes_cbc, is_zstd_stream};
 use crate::error::{Error, Result};
+
+/// Standard local file header signature: PK\x03\x04
+const LOCAL_HEADER_SIGNATURE: [u8; 4] = [0x50, 0x4B, 0x03, 0x04];
+
+/// Encrypted local file header signature: PK\x03\x14 (used by CryEngine/Star Citizen)
+const ENCRYPTED_HEADER_SIGNATURE: [u8; 4] = [0x50, 0x4B, 0x03, 0x14];
+
+/// Central directory header signature: PK\x01\x02
+const CENTRAL_HEADER_SIGNATURE: [u8; 4] = [0x50, 0x4B, 0x01, 0x02];
 
 /// Compression methods used in P4K files
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -293,7 +309,7 @@ impl P4kFile {
             return Ok(None);
         }
         
-        if sig != [0x50, 0x4B, 0x01, 0x02] {
+        if sig != CENTRAL_HEADER_SIGNATURE {
             return Ok(None);
         }
 
@@ -356,8 +372,17 @@ impl P4kFile {
         let mut comment = vec![0u8; comment_len as usize];
         reader.read_exact(&mut comment)?;
 
-        // Check encryption flag (bit 0) and strong encryption (bit 6)
-        let is_encrypted = (flags & 0x0001) != 0 || (flags & 0x0040) != 0;
+        // Check encryption: 
+        // 1. Standard ZIP encryption flag (bit 0)
+        // 2. Strong encryption flag (bit 6)
+        // 3. CryEngine/Star Citizen specific: ExtraData[168] > 0 (from unp4k)
+        let mut is_encrypted = (flags & 0x0001) != 0 || (flags & 0x0040) != 0;
+        
+        // Check for CryEngine AES encryption marker in extra data
+        // As per unp4k C# implementation: this.ExtraData.Length >= 168 && this.ExtraData[168] > 0x00
+        if extra.len() > 168 && extra[168] > 0 {
+            is_encrypted = true;
+        }
         
         // Calculate data offset (need to read local file header)
         let data_offset = header_offset + 30 + name_len as u64 + extra_len as u64;
@@ -375,6 +400,9 @@ impl P4kFile {
     }
 
     /// Read local file header to get accurate data offset
+    /// 
+    /// P4K files may use either standard local header signature (PK\x03\x04)
+    /// or encrypted header signature (PK\x03\x14) as per CryEngine format.
     pub fn read_local_header_offset(&mut self, entry: &P4kEntry) -> Result<u64> {
         self.reader.seek(SeekFrom::Start(entry.header_offset))?;
         
@@ -382,8 +410,12 @@ impl P4kFile {
         let mut sig = [0u8; 4];
         self.reader.read_exact(&mut sig)?;
         
-        if sig != [0x50, 0x4B, 0x03, 0x04] {
-            return Err(Error::InvalidP4k("Invalid local file header signature".to_string()));
+        // Accept both standard and encrypted header signatures
+        if sig != LOCAL_HEADER_SIGNATURE && sig != ENCRYPTED_HEADER_SIGNATURE {
+            return Err(Error::InvalidP4k(format!(
+                "Invalid local file header signature: {:02X?} (expected PK\\x03\\x04 or PK\\x03\\x14)", 
+                sig
+            )));
         }
 
         let _version = self.reader.read_u16::<LittleEndian>()?;
