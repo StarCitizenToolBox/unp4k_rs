@@ -67,25 +67,23 @@ pub struct P4kEntry {
     /// CRC32 checksum
     pub crc32: u32,
     /// Offset to local file header in the archive
-    pub(crate) header_offset: u64,
+    pub header_offset: u64,
     /// Offset to file data in the archive
-    #[allow(dead_code)]
-    pub(crate) data_offset: u64,
+    pub data_offset: u64,
     /// Original extra data from central directory (for incremental writes)
-    pub(crate) extra_data: Vec<u8>,
+    pub extra_data: Vec<u8>,
     /// General purpose bit flags
-    pub(crate) flags: u16,
+    pub flags: u16,
     /// Version made by
-    pub(crate) version_made: u16,
+    pub version_made: u16,
     /// Version needed to extract
-    #[allow(dead_code)]
-    pub(crate) version_needed: u16,
+    pub version_needed: u16,
     /// Modification time (DOS format)
-    pub(crate) mod_time: u16,
+    pub mod_time: u16,
     /// Modification date (DOS format)
-    pub(crate) mod_date: u16,
+    pub mod_date: u16,
     /// External file attributes
-    pub(crate) external_attrs: u32,
+    pub external_attrs: u32,
 }
 
 /// A P4K archive reader
