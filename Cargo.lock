@@ -905,6 +905,7 @@ dependencies = [
  "indicatif",
  "quick-xml",
  "rayon",
+ "sha2",
  "tempfile",
  "thiserror",
  "zip",

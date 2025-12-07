@@ -4,6 +4,7 @@
 //! The encryption key is the same public key used by CryEngine-based games.
 
 use aes::cipher::{block_padding::NoPadding, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
+use sha2::{Sha256, Digest};
 use crate::error::{Error, Result};
 
 type Aes128CbcDec = cbc::Decryptor<aes::Aes128>;
@@ -116,6 +117,22 @@ pub fn is_zstd_stream(data: &[u8]) -> bool {
     data[0] == 0x28 && data[1] == 0xB5 && data[2] == 0x2F && data[3] == 0xFD
 }
 
+/// Calculate SHA256 hash of data
+/// 
+/// This is used by Star Citizen launcher to validate file content integrity.
+/// The hash is stored in extra field at offset 16 (32 bytes).
+pub fn calculate_sha256(data: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    hasher.finalize().into()
+}
+
+/// Verify if data matches the expected SHA256 hash
+pub fn verify_sha256(data: &[u8], expected_hash: &[u8; 32]) -> bool {
+    let actual_hash = calculate_sha256(data);
+    actual_hash == *expected_hash
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,5 +149,35 @@ mod tests {
         
         let not_zstd = [0x50, 0x4B, 0x03, 0x04]; // PK signature
         assert!(!is_zstd_stream(&not_zstd));
+    }
+    
+    #[test]
+    fn test_sha256_hash() {
+        // Test with known SHA256 hash
+        let data = b"Hello, Star Citizen!";
+        let hash = calculate_sha256(data);
+        
+        // SHA256("Hello, Star Citizen!") should be consistent
+        assert_eq!(hash.len(), 32);
+        
+        // Verify the hash
+        assert!(verify_sha256(data, &hash));
+        
+        // Different data should not match
+        let different_data = b"Hello, World!";
+        assert!(!verify_sha256(different_data, &hash));
+    }
+    
+    #[test]
+    fn test_sha256_empty() {
+        let empty: &[u8] = &[];
+        let hash = calculate_sha256(empty);
+        
+        // SHA256 of empty string is a known value
+        // e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+        assert_eq!(hash[0], 0xe3);
+        assert_eq!(hash[1], 0xb0);
+        assert_eq!(hash[2], 0xc4);
+        assert_eq!(hash[3], 0x42);
     }
 }

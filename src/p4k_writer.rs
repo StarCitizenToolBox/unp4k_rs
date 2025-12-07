@@ -1,6 +1,51 @@
 //! P4K file writing and modification
 //!
 //! This module provides functionality to create, modify, and repack P4K archives.
+//!
+//! ## Star Citizen P4K Format Details (from IDA analysis)
+//!
+//! The Star Citizen launcher uses a specific validation scheme for P4K files:
+//!
+//! ### Extra Field Structure (in Central Directory entries)
+//! 
+//! The extra field in P4K entries has the following layout (206 bytes total):
+//! - **Offset 0-n**: ZIP64 extended information (if file sizes exceed 4GB)
+//! - **Offset 4 (8 bytes)**: Additional data (v110 in IDA)
+//! - **Offset 12-20 (8 bytes)**: Validation QWORD (v109) - used in 12-byte validation table
+//! - **Offset 20 (8 bytes)**: Additional data (v111 in IDA)
+//! - **Offset 168 (2 bytes)**: Encryption marker (v117, > 0 indicates AES-128-CBC encryption)
+//! - **Offset 174 (0xAE) (32 bytes)**: SHA256 hash of uncompressed file content
+//!
+//! ### Validation Tables
+//!
+//! Before the Central Directory, P4K files contain validation tables:
+//!
+//! 1. **16-byte table**: Entry count stored in EOCD comment bytes 8-15
+//!    - Each entry: 16 bytes of validation data
+//!    - Can be disabled by setting count to 0
+//!
+//! 2. **12-byte table**: One entry per file in the archive
+//!    - Each entry: 8 bytes (extra[12..20]) + 4 bytes (zeros)
+//!    - Launcher validates: `table[i*12..i*12+8] == CD_entry[i].extra[12..20]`
+//!
+//! ### Launcher Validation Flow (from IDA `sub_18006E420` in cig_hash.c)
+//!
+//! 1. Load remote manifest (file list with expected hashes)
+//! 2. Open local Data.p4k and read TOC (Table of Contents) 
+//! 3. For each entry in manifest:
+//!    - Find corresponding entry in TOC
+//!    - Compare: compressed_size, CRC32, and 32-byte SHA256 hash
+//!    - If mismatch: mark file as corrupted, queue for download
+//! 4. Validation uses: `memcmp(remote_hash, toc_entry[16], 0x20)` (32 bytes)
+//!    - Note: Hash is stored at extra[174] on disk but loaded to memory offset 16
+//!
+//! ### Implications for Modification
+//!
+//! When modifying P4K files:
+//! - New files must have correct SHA256 hashes in extra[174..206]
+//! - The 12-byte table must be regenerated from extra[12..20] values
+//! - Setting 16-byte table count to 0 in EOCD comment disables that check
+//! - CRC32 and compressed sizes must match actual file data
 
 use std::fs::File;
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
@@ -102,6 +147,11 @@ struct WrittenEntry {
     mod_date: Option<u16>,
     /// Original external attributes (for kept entries)
     external_attrs: Option<u32>,
+    /// SHA256 hash of uncompressed content (32 bytes) - for launcher validation
+    content_hash: Option<[u8; 32]>,
+    /// Validation QWORD (8 bytes from extra[12..20]) - for 12-byte table
+    #[allow(dead_code)]
+    validation_qword: Option<u64>,
 }
 
 impl P4kWriter {
@@ -136,6 +186,9 @@ impl P4kWriter {
         // Calculate CRC32 of uncompressed data
         let crc32 = crc32fast::hash(&entry.data);
         let uncompressed_size = entry.data.len() as u64;
+        
+        // Calculate SHA256 hash of uncompressed data for launcher validation
+        let content_hash = crate::crypto::calculate_sha256(&entry.data);
 
         // Compress data
         let compressed_data = self.compress(&entry.data, compression)?;
@@ -160,6 +213,7 @@ impl P4kWriter {
             compressed_size,
             uncompressed_size,
             encrypt,
+            Some(&content_hash),
         )?;
 
         // Write file data
@@ -180,6 +234,8 @@ impl P4kWriter {
             mod_time: None,
             mod_date: None,
             external_attrs: None,
+            content_hash: Some(content_hash),
+            validation_qword: None,
         });
 
         Ok(())
@@ -262,26 +318,39 @@ impl P4kWriter {
         compressed_size: u64,
         uncompressed_size: u64,
         is_encrypted: bool,
+        content_hash: Option<&[u8; 32]>,
     ) -> Result<()> {
         let name_bytes = name.as_bytes();
         let needs_zip64 = compressed_size > 0xFFFFFFFF || uncompressed_size > 0xFFFFFFFF;
 
-        // Build extra field
-        let mut extra = Vec::new();
+        // Build extra field matching Star Citizen P4K format
+        // Based on IDA analysis (p4k_extracted.c LoadPakFile_v1):
+        // - Offset 4: 8 bytes (v110)
+        // - Offset 12-20: 8 bytes Validation QWORD (v109) - used in 12-byte table
+        // - Offset 20: 8 bytes (v111)  
+        // - Offset 168: 2 bytes encryption marker (v117, > 0 for encrypted)
+        // - Offset 174 (0xAE): 32 bytes SHA256 hash of uncompressed content
+        let mut extra = vec![0u8; 206];
         
-        // ZIP64 extra field if needed
+        // ZIP64 extra field at start if needed
+        let mut offset = 0;
         if needs_zip64 {
-            extra.extend_from_slice(&0x0001u16.to_le_bytes()); // ZIP64 header ID
-            extra.extend_from_slice(&16u16.to_le_bytes()); // Data size
-            extra.extend_from_slice(&uncompressed_size.to_le_bytes());
-            extra.extend_from_slice(&compressed_size.to_le_bytes());
+            extra[offset..offset+2].copy_from_slice(&0x0001u16.to_le_bytes()); // ZIP64 header ID
+            offset += 2;
+            extra[offset..offset+2].copy_from_slice(&16u16.to_le_bytes()); // Data size
+            offset += 2;
+            extra[offset..offset+8].copy_from_slice(&uncompressed_size.to_le_bytes());
+            offset += 8;
+            extra[offset..offset+8].copy_from_slice(&compressed_size.to_le_bytes());
         }
         
-        // P4K encryption marker - extra data must have byte at offset 168 > 0 for encrypted entries
+        // Write SHA256 hash at offset 174 (0xAE) - 32 bytes for launcher validation
+        if let Some(hash) = content_hash {
+            extra[174..206].copy_from_slice(hash);
+        }
+        
+        // P4K encryption marker at offset 168
         if is_encrypted {
-            if extra.len() < 169 {
-                extra.resize(169, 0);
-            }
             extra[168] = 0x01;
         }
 
@@ -345,37 +414,47 @@ impl P4kWriter {
             || entry.uncompressed_size > 0xFFFFFFFF
             || entry.header_offset > 0xFFFFFFFF;
 
-        // Build extra field
-        let mut extra = Vec::new();
+        // Build extra field matching Star Citizen P4K format
+        // Structure (from IDA analysis):
+        // - Offset 0-n: ZIP64 extra field (if needed)
+        // - Offset 4: 8 bytes
+        // - Offset 12-20: Validation QWORD (8 bytes) - for 12-byte table
+        // - Offset 20: 8 bytes
+        // - Offset 168: 2 bytes encryption marker
+        // - Offset 174 (0xAE): 32 bytes SHA256 hash
+        let mut extra = vec![0u8; 206];
         
-        // ZIP64 extra field if needed
+        // ZIP64 extra field at start if needed
         if needs_zip64 {
-            extra.extend_from_slice(&0x0001u16.to_le_bytes()); // ZIP64 header ID
+            extra[0..2].copy_from_slice(&0x0001u16.to_le_bytes()); // ZIP64 header ID
+            let mut offset = 4; // Skip header ID and size, fill size later
             let mut data_size = 0u16;
             
-            let mut zip64_data = Vec::new();
             if entry.uncompressed_size > 0xFFFFFFFF {
-                zip64_data.extend_from_slice(&entry.uncompressed_size.to_le_bytes());
+                extra[offset..offset+8].copy_from_slice(&entry.uncompressed_size.to_le_bytes());
+                offset += 8;
                 data_size += 8;
             }
             if entry.compressed_size > 0xFFFFFFFF {
-                zip64_data.extend_from_slice(&entry.compressed_size.to_le_bytes());
+                extra[offset..offset+8].copy_from_slice(&entry.compressed_size.to_le_bytes());
+                offset += 8;
                 data_size += 8;
             }
             if entry.header_offset > 0xFFFFFFFF {
-                zip64_data.extend_from_slice(&entry.header_offset.to_le_bytes());
+                extra[offset..offset+8].copy_from_slice(&entry.header_offset.to_le_bytes());
                 data_size += 8;
             }
             
-            extra.extend_from_slice(&data_size.to_le_bytes());
-            extra.extend_from_slice(&zip64_data);
+            extra[2..4].copy_from_slice(&data_size.to_le_bytes());
         }
         
-        // P4K encryption marker - extra data must have byte at offset 168 > 0 for encrypted entries
+        // Write SHA256 hash at offset 174 (0xAE) - 32 bytes for launcher validation
+        if let Some(hash) = &entry.content_hash {
+            extra[174..206].copy_from_slice(hash);
+        }
+        
+        // P4K encryption marker at offset 168
         if entry.is_encrypted {
-            if extra.len() < 169 {
-                extra.resize(169, 0);
-            }
             extra[168] = 0x01;
         }
 
@@ -456,11 +535,17 @@ impl P4kWriter {
     fn write_zip64_end(&mut self, cd_offset: u64, cd_size: u64) -> Result<()> {
         let zip64_eocd_offset = self.writer.stream_position()?;
 
+        // CIG P4K uses an EXTENDED ZIP64 EOCD format with additional fields:
+        // - Offset 104-105: sector_size (2 bytes)
+        // - Offset 106-113: 16-byte table entry count (8 bytes)
+        // 
+        // Total size = 114 bytes (including signature), so size field = 114 - 12 = 102
+        
         // ZIP64 End of Central Directory Record
         self.writer.write_all(&[0x50, 0x4B, 0x06, 0x06])?;
         
-        // Size of ZIP64 EOCD record
-        self.writer.write_u64::<LittleEndian>(44)?;
+        // Size of ZIP64 EOCD record (CIG extended: 102)
+        self.writer.write_u64::<LittleEndian>(102)?;
         
         // Version made by
         self.writer.write_u16::<LittleEndian>(45)?;
@@ -485,6 +570,16 @@ impl P4kWriter {
         
         // CD offset
         self.writer.write_u64::<LittleEndian>(cd_offset)?;
+        
+        // CIG extended fields (offset 56-113)
+        // Padding from offset 56 to 104 = 48 bytes
+        self.writer.write_all(&[0u8; 48])?;
+        
+        // Offset 104: sector_size (default 4096 for new archives)
+        self.writer.write_u16::<LittleEndian>(4096)?;
+        
+        // Offset 106: 16-byte table entry count (0 to disable validation)
+        self.writer.write_u64::<LittleEndian>(0)?;
 
         // ZIP64 End of Central Directory Locator
         self.writer.write_all(&[0x50, 0x4B, 0x06, 0x07])?;
@@ -623,6 +718,50 @@ fn parse_cig_comment(comment: &[u8]) -> Option<(u16, u64)> {
     Some((sector_size, table16_count))
 }
 
+/// Align a size to sector boundary
+/// 
+/// Uses the same formula as CIG launcher: `~(align - 1) & (size + align - 1)`
+/// This rounds up to the nearest multiple of `align`.
+/// 
+/// # Arguments
+/// * `size` - The size to align
+/// * `align` - The alignment (must be power of 2, typically sector size like 4096)
+/// 
+/// # Returns
+/// The aligned size (>= original size)
+#[inline]
+fn align_to_sector(size: u64, align: u64) -> u64 {
+    if align == 0 || align == 1 {
+        return size;
+    }
+    // Ensure align is power of 2
+    debug_assert!(align.is_power_of_two(), "Alignment must be power of 2");
+    let mask = !(align - 1);
+    (size + align - 1) & mask
+}
+
+/// Pad a writer to sector boundary with zeros
+/// 
+/// # Arguments
+/// * `writer` - The writer to pad
+/// * `align` - The sector alignment
+/// 
+/// # Returns
+/// The number of padding bytes written
+fn pad_to_sector<W: Write + Seek>(writer: &mut W, align: u64) -> Result<u64> {
+    if align <= 1 {
+        return Ok(0);
+    }
+    let current_pos = writer.stream_position()?;
+    let aligned_pos = align_to_sector(current_pos, align);
+    let padding = aligned_pos - current_pos;
+    if padding > 0 {
+        let zeros = vec![0u8; padding as usize];
+        writer.write_all(&zeros)?;
+    }
+    Ok(padding)
+}
+
 /// Create a modified EOCD comment with validation tables disabled
 /// Sets the 16-byte table count to 0 to skip validation
 fn create_disabled_validation_comment(original: &[u8]) -> Vec<u8> {
@@ -727,21 +866,22 @@ impl P4kModifier {
         let entry_count = self.source.len() as u64;
         
         // Calculate the offset where to start writing
-        // P4K has: [file data...][16-byte table][12-byte table][CD][ZIP64][EOCD]
+        // P4K layout: [file data...][12-byte table][16-byte table][CD][ZIP64 EOCD][ZIP64 Locator][EOCD]
         // We skip both tables and regenerate the 12-byte table from CD entries
-        // The 16-byte table count is stored in EOCD comment bytes 8-15
-        let write_offset = if let Some((_, table16_count)) = parse_cig_comment(&self.eocd_comment) {
+        // The 16-byte table count is stored in EOCD comment bytes 8-15 (we set it to 0 to disable)
+        let (sector_size, write_offset) = if let Some((sector_size, table16_count)) = parse_cig_comment(&self.eocd_comment) {
             // Calculate: skip both tables
             let table12_size = 12 * entry_count;
             let table16_size = 16 * table16_count;
-            cd_offset.saturating_sub(table12_size).saturating_sub(table16_size)
+            let offset = cd_offset.saturating_sub(table12_size).saturating_sub(table16_size);
+            (sector_size, offset)
         } else {
             // No CIG comment, use CD offset directly
-            cd_offset
+            (0, cd_offset)
         };
         
-        // Collect entries to keep
-        let entries: Vec<_> = self.source.entries().into_iter().cloned().collect();
+        // Collect entries to keep (in original order for validation table consistency)
+        let entries: Vec<_> = self.source.entries_ordered().into_iter().cloned().collect();
         let mut kept_entries: Vec<WrittenEntry> = Vec::new();
         
         for entry in &entries {
@@ -770,6 +910,8 @@ impl P4kModifier {
                 mod_time: Some(entry.mod_time),
                 mod_date: Some(entry.mod_date),
                 external_attrs: Some(entry.external_attrs),
+                content_hash: entry.content_hash,
+                validation_qword: entry.validation_qword,
             });
         }
         
@@ -799,6 +941,9 @@ impl P4kModifier {
             let crc32 = crc32fast::hash(&entry.data);
             let uncompressed_size = entry.data.len() as u64;
             
+            // Calculate SHA256 hash of uncompressed data for launcher validation
+            let content_hash = crate::crypto::calculate_sha256(&entry.data);
+            
             // Compress data
             let compressed_data = compress_data(&entry.data, compression, &self.options)?;
             
@@ -812,7 +957,7 @@ impl P4kModifier {
             let compressed_size = final_data.len() as u64;
             let header_offset = writer.stream_position()?;
             
-            // Write local file header
+            // Write local file header with SHA256 hash
             write_local_header(
                 &mut writer,
                 &entry.name,
@@ -821,6 +966,7 @@ impl P4kModifier {
                 compressed_size,
                 uncompressed_size,
                 encrypt,
+                Some(&content_hash),
             )?;
             
             // Write file data
@@ -840,15 +986,26 @@ impl P4kModifier {
                 mod_time: None,
                 mod_date: None,
                 external_attrs: None,
+                content_hash: Some(content_hash),
+                validation_qword: None,
             });
         }
         
         // Combine all entries
         kept_entries.extend(new_entries);
         
+        // Align to sector boundary before writing validation table
+        // This matches CIG launcher behavior (sub_180060B10)
+        pad_to_sector(&mut writer, sector_size as u64)?;
+        
         // Generate the 12-byte validation table from kept entries
-        // Each entry: 8 bytes (extra[12]) + 4 bytes (zeros)
-        // This table is validated by game: table[i*12..i*12+8] must equal CD_entry[i].extra[12..20]
+        // Based on IDA analysis of Star Citizen game (game_verify_part1.c):
+        // Each entry: 8 bytes (extra[12..20] validation QWORD) + 4 bytes (zeros)
+        // The table is validated: table[i*12..i*12+8] must equal CD_entry[i].extra[12..20]
+        // 
+        // CRITICAL: The value at extra[12..20] depends on whether ZIP64 is used:
+        // - ZIP64: extra[12..20] = compressed_size (part of ZIP64 extended info)
+        // - Non-ZIP64: extra[12..20] = first 8 bytes of SHA256 hash (for validation)
         let mut table12_new: Vec<u8> = Vec::with_capacity(kept_entries.len() * 12);
         for entry in &kept_entries {
             if let Some(ref extra) = entry.extra_data {
@@ -862,8 +1019,10 @@ impl P4kModifier {
                     table12_new.extend_from_slice(&[0u8; 12]);
                 }
             } else {
-                // No extra data, use zeros
-                table12_new.extend_from_slice(&[0u8; 12]);
+                // New entry - extra[12..20] is always compressed_size in CIG P4K format
+                // This must match what write_central_directory_entry puts at extra[12..20]
+                table12_new.extend_from_slice(&entry.compressed_size.to_le_bytes());
+                table12_new.extend_from_slice(&[0u8; 4]);
             }
         }
         
@@ -883,7 +1042,8 @@ impl P4kModifier {
             || kept_entries.len() > 0xFFFF;
         
         if use_zip64 {
-            write_zip64_end(&mut writer, new_cd_offset, new_cd_size, kept_entries.len())?;
+            // Pass sector_size and 0 for table16_count (we disable it in EOCD comment)
+            write_zip64_end(&mut writer, new_cd_offset, new_cd_size, kept_entries.len(), sector_size as u32, 0)?;
         }
         
         // Write end of central directory with modified comment (validation tables disabled)
@@ -945,30 +1105,40 @@ fn write_local_header<W: Write + Seek>(
     compressed_size: u64,
     uncompressed_size: u64,
     is_encrypted: bool,
+    _content_hash: Option<&[u8; 32]>,
 ) -> Result<()> {
     let name_bytes = name.as_bytes();
     let needs_zip64 = compressed_size > 0xFFFFFFFF || uncompressed_size > 0xFFFFFFFF;
 
-    // Build extra field
-    // P4K format requires extra data with encryption marker at offset 168
-    let mut extra = Vec::new();
+    // Build LOCAL HEADER extra field (31 bytes) - DIFFERENT from Central Directory (206 bytes)
+    // 
+    // Star Citizen P4K game code uses a FIXED calculation for data offset:
+    //   data_offset = header_offset + 61 + filename_len (aligned to sector)
+    // Where 61 = 30 (local header) + 31 (local extra length)
+    // 
+    // Local header extra field structure (31 bytes):
+    // - Offset 0-2: ZIP64 header ID (0x0001) - 2 bytes
+    // - Offset 2-4: Data size (24 = 3 * 8 bytes) - 2 bytes
+    // - Offset 4-12: uncompressed_size - 8 bytes
+    // - Offset 12-20: compressed_size - 8 bytes
+    // - Offset 20-28: header_offset (0 for local) - 8 bytes
+    // - Offset 28-31: Padding - 3 bytes
+    // 
+    // Note: SHA256 hash and encryption marker are ONLY in Central Directory extra (206 bytes)
+    let mut extra = vec![0u8; 31];
     
-    // ZIP64 extra field if needed
-    if needs_zip64 {
-        extra.extend_from_slice(&0x0001u16.to_le_bytes()); // ZIP64 header ID
-        extra.extend_from_slice(&16u16.to_le_bytes());      // Data size
-        extra.extend_from_slice(&uncompressed_size.to_le_bytes());
-        extra.extend_from_slice(&compressed_size.to_le_bytes());
-    }
+    // Always write ZIP64-like structure for P4K compatibility
+    // Header ID = 0x0001, Data size = 24 (3 * 8 bytes)
+    extra[0..2].copy_from_slice(&0x0001u16.to_le_bytes());
+    extra[2..4].copy_from_slice(&24u16.to_le_bytes());
     
-    // P4K encryption marker - extra data must have byte at offset 168 > 0 for encrypted entries
-    if is_encrypted {
-        // Pad extra to at least 169 bytes and set encryption marker
-        if extra.len() < 169 {
-            extra.resize(169, 0);
-        }
-        extra[168] = 0x01; // Encryption marker
-    }
+    // Offset 4-12: uncompressed_size
+    extra[4..12].copy_from_slice(&uncompressed_size.to_le_bytes());
+    // Offset 12-20: compressed_size
+    extra[12..20].copy_from_slice(&compressed_size.to_le_bytes());
+    // Offset 20-28: header_offset (0 for local header)
+    extra[20..28].copy_from_slice(&0u64.to_le_bytes());
+    // Offset 28-31: padding (zeros)
 
     // Local file header signature
     // Use PK\x03\x14 for encrypted entries (CryEngine/Star Citizen specific)
@@ -1020,37 +1190,36 @@ fn write_central_directory_entry<W: Write + Seek>(writer: &mut W, entry: &Writte
         // For kept entries, use original extra data to maintain compatibility
         original_extra.clone()
     } else {
-        // Build extra field for new entries
-        let mut extra = Vec::new();
+        // Build extra field for new entries matching Star Citizen P4K format (206 bytes)
+        // 
+        // CIG P4K extra field structure (fixed offsets, NOT standard ZIP64):
+        // - Offset 0-4: ZIP64 header (0x0001) and size (always present for consistency)
+        // - Offset 4-12: uncompressed_size (v110 in game)
+        // - Offset 12-20: compressed_size (v109 in game, used for 12-byte table validation)
+        // - Offset 20-28: header_offset (v111 in game, used for next entry calculation)
+        // - Offset 168: Encryption marker (2 bytes)
+        // - Offset 174 (0xAE): SHA256 hash (32 bytes)
+        let mut extra = vec![0u8; 206];
         
-        // ZIP64 extra field if needed
-        if needs_zip64 {
-            extra.extend_from_slice(&0x0001u16.to_le_bytes());
-            let mut data_size = 0u16;
-            let mut zip64_data = Vec::new();
-            
-            if entry.uncompressed_size > 0xFFFFFFFF {
-                zip64_data.extend_from_slice(&entry.uncompressed_size.to_le_bytes());
-                data_size += 8;
-            }
-            if entry.compressed_size > 0xFFFFFFFF {
-                zip64_data.extend_from_slice(&entry.compressed_size.to_le_bytes());
-                data_size += 8;
-            }
-            if entry.header_offset > 0xFFFFFFFF {
-                zip64_data.extend_from_slice(&entry.header_offset.to_le_bytes());
-                data_size += 8;
-            }
-            
-            extra.extend_from_slice(&data_size.to_le_bytes());
-            extra.extend_from_slice(&zip64_data);
+        // Always write ZIP64-like structure for P4K compatibility
+        // Header ID = 0x0001, Data size = 24 (3 * 8 bytes)
+        extra[0..2].copy_from_slice(&0x0001u16.to_le_bytes());
+        extra[2..4].copy_from_slice(&24u16.to_le_bytes());
+        
+        // Offset 4-12: uncompressed_size
+        extra[4..12].copy_from_slice(&entry.uncompressed_size.to_le_bytes());
+        // Offset 12-20: compressed_size (also used as validation QWORD in 12-byte table)
+        extra[12..20].copy_from_slice(&entry.compressed_size.to_le_bytes());
+        // Offset 20-28: header_offset
+        extra[20..28].copy_from_slice(&entry.header_offset.to_le_bytes());
+        
+        // Write SHA256 hash at offset 174 (0xAE) - 32 bytes for launcher validation
+        if let Some(hash) = &entry.content_hash {
+            extra[174..206].copy_from_slice(hash);
         }
         
-        // P4K encryption marker - extra data must have byte at offset 168 > 0 for encrypted entries
+        // P4K encryption marker at offset 168
         if entry.is_encrypted {
-            if extra.len() < 169 {
-                extra.resize(169, 0);
-            }
             extra[168] = 0x01;
         }
         extra
@@ -1106,20 +1275,38 @@ fn write_central_directory_entry<W: Write + Seek>(writer: &mut W, entry: &Writte
     Ok(())
 }
 
-fn write_zip64_end<W: Write + Seek>(writer: &mut W, cd_offset: u64, cd_size: u64, entry_count: usize) -> Result<()> {
+fn write_zip64_end<W: Write + Seek>(writer: &mut W, cd_offset: u64, cd_size: u64, entry_count: usize, sector_size: u32, table16_count: u64) -> Result<()> {
     let zip64_eocd_offset = writer.stream_position()?;
 
+    // CIG P4K uses an EXTENDED ZIP64 EOCD format with additional fields:
+    // - Offset 104-105: sector_size (2 bytes)
+    // - Offset 106-113: 16-byte table entry count (8 bytes)
+    // 
+    // Total size = 114 bytes (including signature), so size field = 114 - 12 = 102
+    // (size field excludes signature (4) and size field itself (8))
+    
     writer.write_all(&[0x50, 0x4B, 0x06, 0x06])?;
-    writer.write_u64::<LittleEndian>(44)?;
-    writer.write_u16::<LittleEndian>(45)?;
-    writer.write_u16::<LittleEndian>(45)?;
-    writer.write_u32::<LittleEndian>(0)?;
-    writer.write_u32::<LittleEndian>(0)?;
-    writer.write_u64::<LittleEndian>(entry_count as u64)?;
-    writer.write_u64::<LittleEndian>(entry_count as u64)?;
-    writer.write_u64::<LittleEndian>(cd_size)?;
-    writer.write_u64::<LittleEndian>(cd_offset)?;
+    writer.write_u64::<LittleEndian>(102)?;  // CIG extended size (standard is 44)
+    writer.write_u16::<LittleEndian>(45)?;   // version made by
+    writer.write_u16::<LittleEndian>(45)?;   // version needed
+    writer.write_u32::<LittleEndian>(0)?;    // disk number (offset 16)
+    writer.write_u32::<LittleEndian>(0)?;    // disk with CD (offset 20)
+    writer.write_u64::<LittleEndian>(entry_count as u64)?;  // entries on disk (offset 24)
+    writer.write_u64::<LittleEndian>(entry_count as u64)?;  // total entries (offset 32)
+    writer.write_u64::<LittleEndian>(cd_size)?;   // CD size (offset 40)
+    writer.write_u64::<LittleEndian>(cd_offset)?; // CD offset (offset 48)
+    
+    // CIG extended fields (offset 56-113)
+    // Padding from offset 56 to 104 = 48 bytes
+    writer.write_all(&[0u8; 48])?;
+    
+    // Offset 104: sector_size (2 bytes)
+    writer.write_u16::<LittleEndian>(sector_size as u16)?;
+    
+    // Offset 106: 16-byte table entry count (8 bytes)
+    writer.write_u64::<LittleEndian>(table16_count)?;
 
+    // ZIP64 End of Central Directory Locator
     writer.write_all(&[0x50, 0x4B, 0x06, 0x07])?;
     writer.write_u32::<LittleEndian>(0)?;
     writer.write_u64::<LittleEndian>(zip64_eocd_offset)?;

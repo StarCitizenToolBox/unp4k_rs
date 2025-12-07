@@ -84,6 +84,11 @@ pub struct P4kEntry {
     pub mod_date: u16,
     /// External file attributes
     pub external_attrs: u32,
+    /// SHA256 hash of uncompressed content (32 bytes, extracted from extra field offset 16)
+    /// Used by Star Citizen launcher for validation
+    pub content_hash: Option<[u8; 32]>,
+    /// Validation QWORD from extra field offset 12-20 (used in 12-byte table)
+    pub validation_qword: Option<u64>,
 }
 
 /// A P4K archive reader
@@ -114,8 +119,7 @@ impl P4kFile {
         let mut reader = BufReader::new(file);
         
         // Read central directory
-        let (entries, cd_offset, eocd_comment) = Self::read_central_directory(&mut reader)?;
-        let entry_list: Vec<String> = entries.keys().cloned().collect();
+        let (entries, entry_list, cd_offset, eocd_comment) = Self::read_central_directory(&mut reader)?;
         
         Ok(P4kFile {
             reader,
@@ -131,9 +135,17 @@ impl P4kFile {
         self.entry_list.iter().map(|s| s.as_str())
     }
 
-    /// Get all entries as a slice
+    /// Get all entries as a slice (unordered)
     pub fn entries(&self) -> Vec<&P4kEntry> {
         self.entries.values().collect()
+    }
+
+    /// Get all entries in their original order (as they appear in the central directory)
+    /// This is important for P4K validation tables which depend on entry order
+    pub fn entries_ordered(&self) -> Vec<&P4kEntry> {
+        self.entry_list.iter()
+            .filter_map(|name| self.entries.get(name))
+            .collect()
     }
 
     /// Get the number of entries in the archive
@@ -202,6 +214,40 @@ impl P4kFile {
         Ok(decompressed)
     }
 
+    /// Extract and verify an entry's content hash
+    /// 
+    /// This validates the extracted content against the SHA256 hash stored
+    /// in the entry's extra field (used by Star Citizen launcher for validation).
+    /// 
+    /// # Arguments
+    /// * `entry` - The entry to extract and verify
+    /// 
+    /// # Returns
+    /// * `Ok((data, true))` - Data extracted and hash matches
+    /// * `Ok((data, false))` - Data extracted but hash doesn't match or no hash stored
+    /// * `Err(...)` - Extraction failed
+    pub fn extract_and_verify(&mut self, entry: &P4kEntry) -> Result<(Vec<u8>, bool)> {
+        let data = self.extract_entry(entry)?;
+        
+        if let Some(expected_hash) = &entry.content_hash {
+            let verified = crate::crypto::verify_sha256(&data, expected_hash);
+            Ok((data, verified))
+        } else {
+            // No hash stored, can't verify
+            Ok((data, false))
+        }
+    }
+
+    /// Verify an entry's content hash without extracting
+    /// 
+    /// # Returns
+    /// * `Ok(true)` - Hash matches
+    /// * `Ok(false)` - Hash doesn't match or no hash stored
+    pub fn verify_entry(&mut self, entry: &P4kEntry) -> Result<bool> {
+        let (_, verified) = self.extract_and_verify(entry)?;
+        Ok(verified)
+    }
+
     /// Decompress data based on the compression method
     fn decompress(&self, data: &[u8], entry: &P4kEntry) -> Result<Vec<u8>> {
         match entry.compression_method {
@@ -249,8 +295,8 @@ impl P4kFile {
     }
 
     /// Read the central directory to build the entry index
-    /// Returns (entries, cd_offset, eocd_comment)
-    fn read_central_directory(reader: &mut BufReader<File>) -> Result<(HashMap<String, P4kEntry>, u64, Vec<u8>)> {
+    /// Returns (entries, entry_order, cd_offset, eocd_comment)
+    fn read_central_directory(reader: &mut BufReader<File>) -> Result<(HashMap<String, P4kEntry>, Vec<String>, u64, Vec<u8>)> {
         // Find End of Central Directory record
         let file_len = reader.seek(SeekFrom::End(0))?;
         
@@ -310,12 +356,14 @@ impl P4kFile {
 
         // Read central directory entries
         let mut entries = HashMap::with_capacity(total_entries as usize);
+        let mut entry_order = Vec::with_capacity(total_entries as usize);
         reader.seek(SeekFrom::Start(cd_offset))?;
         
         let mut pos = 0u64;
         while pos < cd_size {
             let entry = Self::read_central_directory_entry(reader)?;
             if let Some(entry) = entry {
+                entry_order.push(entry.name.clone());
                 entries.insert(entry.name.clone(), entry);
             }
             pos = reader.stream_position()? - cd_offset;
@@ -331,7 +379,7 @@ impl P4kFile {
             reader.read_exact(&mut eocd_comment)?;
         }
 
-        Ok((entries, cd_offset, eocd_comment))
+        Ok((entries, entry_order, cd_offset, eocd_comment))
     }
 
     fn read_standard_eocd(reader: &mut BufReader<File>, eocd_pos: u64) -> Result<(u64, u64, u64)> {
@@ -429,6 +477,31 @@ impl P4kFile {
             is_encrypted = true;
         }
         
+        // Extract validation data from extra field (Star Citizen launcher verification)
+        // Based on IDA analysis (p4k_extracted.c LoadPakFile_v1):
+        // - Offset 4 (8 bytes): v110
+        // - Offset 12-20 (8 bytes): v109 - Validation QWORD used in 12-byte table
+        // - Offset 20 (8 bytes): v111
+        // - Offset 168 (2 bytes): v117 - encryption marker
+        // - Offset 174 (0xAE) (32 bytes): SHA256 hash of uncompressed content
+        let validation_qword = if extra.len() >= 20 {
+            Some(u64::from_le_bytes([
+                extra[12], extra[13], extra[14], extra[15],
+                extra[16], extra[17], extra[18], extra[19],
+            ]))
+        } else {
+            None
+        };
+        
+        // SHA256 hash is at offset 174 (0xAE) in the extra field
+        let content_hash = if extra.len() >= 206 {
+            let mut hash = [0u8; 32];
+            hash.copy_from_slice(&extra[174..206]);
+            Some(hash)
+        } else {
+            None
+        };
+        
         // Note: data_offset will be calculated later by reading the local file header
         // because the local header's extra field length may differ from the central directory's
         // We store 0 here as a placeholder, it will be updated in extract_entry
@@ -450,6 +523,8 @@ impl P4kFile {
             mod_time,
             mod_date,
             external_attrs,
+            content_hash,
+            validation_qword,
         }))
     }
 
