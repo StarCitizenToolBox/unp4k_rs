@@ -99,7 +99,7 @@ pub fn export_merged(df: &DataForge, dcb_path: &Path, output: Option<&Path>) -> 
     for idx in 0..df.record_count() {
         pb.inc(1);
 
-        match df.record_to_xml_by_index(idx) {
+        match df.record_to_xml_by_index(idx, false) {
             Ok(record_xml) => {
                 // Skip XML declaration from each record
                 let content = record_xml
@@ -156,7 +156,7 @@ pub fn export_separate(df: &DataForge, dcb_path: &Path, output: Option<&Path>) -
     for (path, &idx) in df.path_to_record() {
         pb.inc(1);
 
-        match df.record_to_xml_by_index(idx) {
+        match df.record_to_xml_by_index(idx, false) {
             Ok(xml) => {
                 // Create directory structure based on record path
                 let out_path = output_dir.join(format!("{}.xml", path));
@@ -191,11 +191,20 @@ pub fn get_record_list(df: &DataForge) -> Vec<String> {
 }
 
 /// Extract a single record to memory (XML string)
-pub fn extract_to_memory(df: &DataForge, path: &str) -> Result<String> {
-    Ok(df.record_to_xml(path)?)
+///
+/// # Arguments
+/// * `df` - The DataForge instance
+/// * `path` - The record path to extract
+/// * `format_xml` - If true, format XML with indentation for human readability (default: true)
+pub fn extract_to_memory(df: &DataForge, path: &str, format_xml: bool) -> Result<String> {
+    Ok(df.record_to_xml(path, format_xml)?)
 }
 
 /// Extract all records to memory (HashMap of path -> XML string)
-pub fn extract_all_to_memory(df: &DataForge) -> Result<HashMap<String, String>> {
-    Ok(df.extract_all_to_memory()?)
+///
+/// # Arguments
+/// * `df` - The DataForge instance  
+/// * `format_xml` - If true, format XML with indentation for human readability (default: true)
+pub fn extract_all_to_memory(df: &DataForge, format_xml: bool) -> Result<HashMap<String, String>> {
+    Ok(df.extract_all_to_memory(format_xml)?)
 }

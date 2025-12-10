@@ -13,21 +13,29 @@ use crate::error::{Error, Result};
 const MAX_POINTER_DEPTH: usize = 100;
 
 /// Maximum nodes to output (prevent huge files)
-const MAX_NODES: usize = 10000;
+const MAX_NODES: usize = 100000;
 
 impl DataForge {
     /// Convert a record to XML by path
-    pub fn record_to_xml(&self, path: &str) -> Result<String> {
+    ///
+    /// # Arguments
+    /// * `path` - The record path to convert
+    /// * `format_xml` - If true, format XML with indentation for human readability (default: false)
+    pub fn record_to_xml(&self, path: &str, format_xml: bool) -> Result<String> {
         let record_idx = self
             .path_to_record()
             .get(path)
             .ok_or_else(|| Error::InvalidDataForge(format!("Record not found: {}", path)))?;
 
-        self.record_to_xml_by_index(*record_idx)
+        self.record_to_xml_by_index(*record_idx, format_xml)
     }
 
     /// Convert a record to XML by index
-    pub fn record_to_xml_by_index(&self, index: usize) -> Result<String> {
+    ///
+    /// # Arguments
+    /// * `index` - The record index to convert
+    /// * `format_xml` - If true, format XML with indentation for human readability (default: false)
+    pub fn record_to_xml_by_index(&self, index: usize, format_xml: bool) -> Result<String> {
         if index >= self.record_definitions().len() {
             return Err(Error::InvalidDataForge(format!(
                 "Record index {} out of range",
@@ -72,15 +80,22 @@ impl DataForge {
             xml.push_str(&format!("</{}>", Self::escape_xml(&record_name)));
         }
 
-        Ok(xml)
+        if format_xml {
+            Ok(Self::format_xml_string(&xml))
+        } else {
+            Ok(xml)
+        }
     }
 
     /// Convert all records to XML (returns a map of path -> XML)
-    pub fn extract_all_to_memory(&self) -> Result<HashMap<String, String>> {
+    ///
+    /// # Arguments
+    /// * `format_xml` - If true, format XML with indentation for human readability (default: false)
+    pub fn extract_all_to_memory(&self, format_xml: bool) -> Result<HashMap<String, String>> {
         let mut results = HashMap::new();
 
         for (path, &idx) in self.path_to_record() {
-            match self.record_to_xml_by_index(idx) {
+            match self.record_to_xml_by_index(idx, format_xml) {
                 Ok(xml) => {
                     results.insert(path.clone(), xml);
                 }
@@ -92,6 +107,40 @@ impl DataForge {
         }
 
         Ok(results)
+    }
+
+    /// Format an XML string with proper indentation for human readability
+    /// Uses quick-xml library for reliable XML parsing
+    fn format_xml_string(xml: &str) -> String {
+        use quick_xml::events::Event;
+        use quick_xml::Reader;
+        use quick_xml::Writer;
+
+        let mut reader = Reader::from_str(xml);
+        reader.config_mut().trim_text(true);
+
+        let mut writer = Writer::new_with_indent(Cursor::new(Vec::new()), b' ', 2);
+
+        loop {
+            match reader.read_event() {
+                Ok(Event::Eof) => break,
+                Ok(event) => {
+                    if let Err(_e) = writer.write_event(event) {
+                        // If writing fails, return original XML
+                        return xml.to_string();
+                    }
+                }
+                Err(_e) => {
+                    // If parsing fails, return original XML
+                    return xml.to_string();
+                }
+            }
+        }
+
+        match String::from_utf8(writer.into_inner().into_inner()) {
+            Ok(formatted) => formatted + "\n",
+            Err(_) => xml.to_string(),
+        }
     }
 
     /// Escape special XML characters
