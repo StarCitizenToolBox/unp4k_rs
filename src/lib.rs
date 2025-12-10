@@ -77,6 +77,7 @@
 
 pub mod crypto;
 pub mod cryxml;
+pub mod dataforge;
 pub mod error;
 pub mod p4k;
 pub mod p4k_writer;
@@ -85,3 +86,5 @@ pub use error::{Error, Result};
 pub use p4k::{P4kEntry, P4kFile, CompressionMethod};
 pub use p4k_writer::{P4kWriter, P4kWriteEntry, P4kWriteOptions, P4kModifier};
 pub use cryxml::CryXmlReader;
+pub use dataforge::DataForge;
+

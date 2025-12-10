@@ -28,6 +28,9 @@ pub enum Error {
 
     #[error("Unsupported compression method: {0}")]
     UnsupportedCompression(u16),
+
+    #[error("Invalid DataForge/DCB file: {0}")]
+    InvalidDataForge(String),
 }
 
 /// Result type alias for unp4k operations
