@@ -63,21 +63,30 @@ impl DataForge {
             &record_name,
         )?;
 
-        // Add metadata attributes
-        let open_tag = format!(
-            "<{} __type=\"{}\" __ref=\"{}\" __path=\"{}\">",
-            Self::escape_xml(&record_name),
+        // Build opening tag with all attributes
+        let escaped_record_name = Self::escape_xml(&record_name);
+        let mut open_tag = format!(
+            "<{} __type=\"{}\" __ref=\"{}\" __path=\"{}\"",
+            escaped_record_name,
             Self::escape_xml(&struct_name),
             record.hash.to_string(),
             Self::escape_xml(&file_name),
         );
 
-        if content.is_empty() {
-            xml.push_str(&open_tag.replace(">", " />"));
-        } else {
+        // Add struct attributes to the opening tag
+        open_tag.push_str(&content.attributes);
+
+        // Check if element has children
+        let has_children = !content.children.is_empty();
+
+        if has_children {
+            open_tag.push('>');
             xml.push_str(&open_tag);
-            xml.push_str(&content);
-            xml.push_str(&format!("</{}>", Self::escape_xml(&record_name)));
+            xml.push_str(&content.children);
+            xml.push_str(&format!("</{}>", escaped_record_name));
+        } else {
+            open_tag.push_str(" />");
+            xml.push_str(&open_tag);
         }
 
         if format_xml {
@@ -287,6 +296,14 @@ impl DataForge {
     }
 }
 
+/// XML content with separated attributes and children
+struct XmlContent {
+    /// Attributes as string (e.g., ` attr1="val1" attr2="val2"`)
+    attributes: String,
+    /// Child elements as string
+    children: String,
+}
+
 /// Context for XML generation (tracks visited structs to prevent loops)
 struct XmlContext<'a> {
     df: &'a DataForge,
@@ -308,11 +325,14 @@ impl<'a> XmlContext<'a> {
         struct_index: u32,
         variant_index: u32,
         _name: &str,
-    ) -> Result<String> {
+    ) -> Result<XmlContent> {
         // Check for recursion
         let key = (struct_index, variant_index);
         if self.struct_stack.contains(&key) || self.struct_stack.len() > MAX_POINTER_DEPTH {
-            return Ok(String::new());
+            return Ok(XmlContent {
+                attributes: String::new(),
+                children: String::new(),
+            });
         }
         self.struct_stack.insert(key);
 
@@ -325,11 +345,17 @@ impl<'a> XmlContext<'a> {
                     + offset
                     + (struct_def.record_size as u64 * variant_index as u64)
             }
-            None => return Ok(String::new()),
+            None => {
+                return Ok(XmlContent {
+                    attributes: String::new(),
+                    children: String::new(),
+                })
+            }
         };
 
-        // Read all properties
-        let mut xml = String::new();
+        // Read all properties - separate attributes from children
+        let mut attributes = String::new();
+        let mut children = String::new();
         let mut cursor = Cursor::new(self.df.data());
         cursor.seek(SeekFrom::Start(data_offset))?;
 
@@ -347,18 +373,21 @@ impl<'a> XmlContext<'a> {
             match prop.conversion_type {
                 ConversionType::Attribute => {
                     let attr_xml = self.read_attribute_value(&mut cursor, prop, &prop_name)?;
-                    xml.push_str(&attr_xml);
+                    attributes.push_str(&attr_xml);
                     self.node_count += 1;
                 }
                 _ => {
-                    let array_xml = self.read_array_value(&mut cursor, prop, &prop_name)?;
-                    xml.push_str(&array_xml);
+                    let child_xml = self.read_array_value(&mut cursor, prop, &prop_name)?;
+                    children.push_str(&child_xml);
                 }
             }
         }
 
         self.struct_stack.remove(&key);
-        Ok(xml)
+        Ok(XmlContent {
+            attributes,
+            children,
+        })
     }
 
     /// Build XML for an inline struct (data at current cursor position)
@@ -724,15 +753,23 @@ impl<'a> XmlContext<'a> {
                     first_index + offset as u32,
                     &struct_name,
                 )?;
-                if content.is_empty() {
-                    Ok(format!("<{} />", DataForge::escape_xml(&struct_name)))
+                let escaped_name = DataForge::escape_xml(&struct_name);
+                let has_content = !content.attributes.is_empty() || !content.children.is_empty();
+
+                if has_content {
+                    let mut tag = format!("<{}", escaped_name);
+                    tag.push_str(&content.attributes);
+                    if content.children.is_empty() {
+                        tag.push_str(" />");
+                        Ok(tag)
+                    } else {
+                        tag.push('>');
+                        tag.push_str(&content.children);
+                        tag.push_str(&format!("</{}>", escaped_name));
+                        Ok(tag)
+                    }
                 } else {
-                    Ok(format!(
-                        "<{}{}></{}>",
-                        DataForge::escape_xml(&struct_name),
-                        content,
-                        DataForge::escape_xml(&struct_name)
-                    ))
+                    Ok(format!("<{} />", escaped_name))
                 }
             }
             DataType::StrongPointer => {
@@ -746,15 +783,24 @@ impl<'a> XmlContext<'a> {
                     let struct_name = self.df.get_struct_name(struct_idx as usize)?;
                     let content =
                         self.build_struct_xml(struct_idx, variant_idx as u32, &struct_name)?;
-                    if content.is_empty() {
-                        Ok(format!("<{} />", DataForge::escape_xml(&struct_name)))
+                    let escaped_name = DataForge::escape_xml(&struct_name);
+                    let has_content =
+                        !content.attributes.is_empty() || !content.children.is_empty();
+
+                    if has_content {
+                        let mut tag = format!("<{}", escaped_name);
+                        tag.push_str(&content.attributes);
+                        if content.children.is_empty() {
+                            tag.push_str(" />");
+                            Ok(tag)
+                        } else {
+                            tag.push('>');
+                            tag.push_str(&content.children);
+                            tag.push_str(&format!("</{}>", escaped_name));
+                            Ok(tag)
+                        }
                     } else {
-                        Ok(format!(
-                            "<{}{}></{}>",
-                            DataForge::escape_xml(&struct_name),
-                            content,
-                            DataForge::escape_xml(&struct_name)
-                        ))
+                        Ok(format!("<{} />", escaped_name))
                     }
                 }
             }
