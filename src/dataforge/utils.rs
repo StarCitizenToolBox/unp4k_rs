@@ -4,6 +4,7 @@
 
 use anyhow::{Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -182,4 +183,19 @@ pub fn export_separate(df: &DataForge, dcb_path: &Path, output: Option<&Path>) -
     );
 
     Ok(())
+}
+
+/// Get a list of all record paths in the DataForge file
+pub fn get_record_list(df: &DataForge) -> Vec<String> {
+    df.record_paths().cloned().collect()
+}
+
+/// Extract a single record to memory (XML string)
+pub fn extract_to_memory(df: &DataForge, path: &str) -> Result<String> {
+    Ok(df.record_to_xml(path)?)
+}
+
+/// Extract all records to memory (HashMap of path -> XML string)
+pub fn extract_all_to_memory(df: &DataForge) -> Result<HashMap<String, String>> {
+    Ok(df.extract_all_to_memory()?)
 }

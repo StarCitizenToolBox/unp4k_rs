@@ -40,4 +40,7 @@ mod xml;
 pub use header::DataForgeHeader;
 pub use reader::DataForge;
 pub use types::*;
-pub use utils::{convert_dcb, export_merged, export_separate, show_dcb_info};
+pub use utils::{
+    convert_dcb, export_merged, export_separate, extract_all_to_memory, extract_to_memory,
+    get_record_list, show_dcb_info,
+};
