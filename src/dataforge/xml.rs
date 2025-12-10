@@ -1,6 +1,10 @@
 //! XML output generation for DataForge records
+//!
+//! Uses quick-xml library for proper XML construction.
 
 use byteorder::{LittleEndian, ReadBytesExt};
+use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
+use quick_xml::Writer;
 use std::collections::{HashMap, HashSet};
 use std::io::{Cursor, Read, Seek, SeekFrom};
 
@@ -14,6 +18,59 @@ const MAX_POINTER_DEPTH: usize = 100;
 
 /// Maximum nodes to output (prevent huge files)
 const MAX_NODES: usize = 100000;
+
+/// XML Element representation
+#[derive(Debug, Clone)]
+struct XmlElement {
+    name: String,
+    attributes: Vec<(String, String)>,
+    children: Vec<XmlNode>,
+}
+
+/// XML Node - can be an element or text
+#[derive(Debug, Clone)]
+enum XmlNode {
+    Element(XmlElement),
+    Text(String),
+}
+
+impl XmlElement {
+    fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            attributes: Vec::new(),
+            children: Vec::new(),
+        }
+    }
+
+    #[allow(unused)]
+    fn with_attr(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.attributes.push((key.into(), value.into()));
+        self
+    }
+
+    fn add_attr(&mut self, key: impl Into<String>, value: impl Into<String>) {
+        self.attributes.push((key.into(), value.into()));
+    }
+
+    fn add_child(&mut self, child: XmlNode) {
+        self.children.push(child);
+    }
+
+    fn add_element(&mut self, element: XmlElement) {
+        self.children.push(XmlNode::Element(element));
+    }
+
+    #[allow(unused)]
+    fn is_empty(&self) -> bool {
+        self.attributes.is_empty() && self.children.is_empty()
+    }
+
+    #[allow(unused)]
+    fn has_children(&self) -> bool {
+        !self.children.is_empty()
+    }
+}
 
 impl DataForge {
     /// Convert a record to XML by path
@@ -52,48 +109,18 @@ impl DataForge {
 
         let mut ctx = XmlContext::new(self);
 
-        // Start XML document
-        let mut xml = String::new();
-        xml.push_str("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
+        // Build root element
+        let mut root = XmlElement::new(&record_name);
+        root.add_attr("__type", &struct_name);
+        root.add_attr("__ref", record.hash.to_string());
+        root.add_attr("__path", &file_name);
 
-        // Build record element
-        let content = ctx.build_struct_xml(
-            record.struct_index,
-            record.variant_index as u32,
-            &record_name,
-        )?;
+        // Add struct content (attributes and children)
+        ctx.build_struct_content(&mut root, record.struct_index, record.variant_index as u32)?;
 
-        // Build opening tag with all attributes
-        let escaped_record_name = Self::escape_xml(&record_name);
-        let mut open_tag = format!(
-            "<{} __type=\"{}\" __ref=\"{}\" __path=\"{}\"",
-            escaped_record_name,
-            Self::escape_xml(&struct_name),
-            record.hash.to_string(),
-            Self::escape_xml(&file_name),
-        );
-
-        // Add struct attributes to the opening tag
-        open_tag.push_str(&content.attributes);
-
-        // Check if element has children
-        let has_children = !content.children.is_empty();
-
-        if has_children {
-            open_tag.push('>');
-            xml.push_str(&open_tag);
-            xml.push_str(&content.children);
-            xml.push_str(&format!("</{}>", escaped_record_name));
-        } else {
-            open_tag.push_str(" />");
-            xml.push_str(&open_tag);
-        }
-
-        if format_xml {
-            Ok(Self::format_xml_string(&xml))
-        } else {
-            Ok(xml)
-        }
+        // Serialize to XML string
+        let xml = Self::serialize_xml(&root, format_xml)?;
+        Ok(xml)
     }
 
     /// Convert all records to XML (returns a map of path -> XML)
@@ -118,190 +145,67 @@ impl DataForge {
         Ok(results)
     }
 
-    /// Format an XML string with proper indentation for human readability
-    /// Implements VSCode-style formatting:
-    /// - 2 space indentation
-    /// - Short text content stays inline with tags (e.g., `<Name>Value</Name>`)
-    /// - Only nested elements get newlines and indentation
-    fn format_xml_string(xml: &str) -> String {
-        use quick_xml::events::Event;
-        use quick_xml::Reader;
+    /// Serialize an XmlElement to string using quick-xml
+    fn serialize_xml(element: &XmlElement, format: bool) -> Result<String> {
+        let mut buffer = Vec::new();
 
-        let mut reader = Reader::from_str(xml);
-        reader.config_mut().trim_text(true);
+        {
+            let mut writer = if format {
+                Writer::new_with_indent(&mut buffer, b' ', 2)
+            } else {
+                Writer::new(&mut buffer)
+            };
 
-        let mut result = String::with_capacity(xml.len() * 2);
-        let mut indent_level: usize = 0;
-        let mut pending_start_tag: Option<String> = None;
-        let mut pending_text: Option<String> = None;
+            // Write XML declaration
+            writer.write_event(Event::Decl(BytesDecl::new("1.0", Some("utf-8"), None)))?;
+            if format {
+                writer.write_event(Event::Text(BytesText::new("\n")))?;
+            }
 
-        loop {
-            match reader.read_event() {
-                Ok(Event::Eof) => break,
-                Ok(Event::Decl(decl)) => {
-                    // XML declaration
-                    result.push_str("<?xml");
-                    if let Ok(version) = decl.version() {
-                        result.push_str(&format!(
-                            " version=\"{}\"",
-                            String::from_utf8_lossy(&version)
-                        ));
-                    }
-                    if let Some(Ok(encoding)) = decl.encoding() {
-                        result.push_str(&format!(
-                            " encoding=\"{}\"",
-                            String::from_utf8_lossy(&encoding)
-                        ));
-                    }
-                    result.push_str("?>\n");
-                }
-                Ok(Event::Start(e)) => {
-                    // Flush any pending content
-                    if let Some(tag) = pending_start_tag.take() {
-                        result.push_str(&tag);
-                        result.push('\n');
-                        indent_level += 1;
-                    }
-                    pending_text = None;
+            // Write root element
+            Self::write_element(&mut writer, element)?;
+        }
 
-                    // Write indentation
-                    for _ in 0..indent_level {
-                        result.push_str("  ");
-                    }
+        String::from_utf8(buffer).map_err(|e| Error::InvalidDataForge(e.to_string()))
+    }
 
-                    // Build the start tag
-                    let tag_str = Self::format_start_tag(&e);
-                    pending_start_tag = Some(tag_str);
-                }
-                Ok(Event::End(e)) => {
-                    let tag_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+    /// Write an XmlElement to the writer
+    fn write_element<W: std::io::Write>(
+        writer: &mut Writer<W>,
+        element: &XmlElement,
+    ) -> Result<()> {
+        let mut start = BytesStart::new(&element.name);
 
-                    if let Some(start_tag) = pending_start_tag.take() {
-                        if let Some(text) = pending_text.take() {
-                            // Inline format: <Tag>text</Tag>
-                            result.push_str(&start_tag);
-                            result.push_str(&text);
-                            result.push_str(&format!("</{}>\n", Self::escape_xml(&tag_name)));
-                        } else {
-                            // Self-closing style for empty elements
-                            let self_closing =
-                                start_tag.trim_end_matches('>').to_string() + " />\n";
-                            result.push_str(&self_closing);
-                        }
-                    } else {
-                        // Regular closing tag with indentation
-                        indent_level = indent_level.saturating_sub(1);
-                        for _ in 0..indent_level {
-                            result.push_str("  ");
-                        }
-                        result.push_str(&format!("</{}>\n", Self::escape_xml(&tag_name)));
-                    }
-                    pending_text = None;
-                }
-                Ok(Event::Empty(e)) => {
-                    // Flush any pending content
-                    if let Some(tag) = pending_start_tag.take() {
-                        result.push_str(&tag);
-                        result.push('\n');
-                        indent_level += 1;
-                    }
-                    pending_text = None;
+        // Add attributes
+        for (key, value) in &element.attributes {
+            start.push_attribute((key.as_str(), value.as_str()));
+        }
 
-                    // Write indentation
-                    for _ in 0..indent_level {
-                        result.push_str("  ");
-                    }
+        if element.children.is_empty() {
+            // Self-closing tag
+            writer.write_event(Event::Empty(start))?;
+        } else {
+            // Opening tag
+            writer.write_event(Event::Start(start))?;
 
-                    // Write self-closing tag
-                    let tag_str = Self::format_start_tag(&e);
-                    let self_closing = tag_str.trim_end_matches('>').to_string() + " />\n";
-                    result.push_str(&self_closing);
-                }
-                Ok(Event::Text(e)) => {
-                    let text = String::from_utf8_lossy(&e).to_string();
-                    if !text.trim().is_empty() {
-                        pending_text = Some(text.trim().to_string());
+            // Write children
+            for child in &element.children {
+                match child {
+                    XmlNode::Element(elem) => {
+                        Self::write_element(writer, elem)?;
                     }
-                }
-                Ok(Event::CData(e)) => {
-                    if let Some(tag) = pending_start_tag.take() {
-                        result.push_str(&tag);
-                        result.push('\n');
-                        indent_level += 1;
+                    XmlNode::Text(text) => {
+                        writer.write_event(Event::Text(BytesText::new(text)))?;
                     }
-                    for _ in 0..indent_level {
-                        result.push_str("  ");
-                    }
-                    result.push_str("<![CDATA[");
-                    result.push_str(&String::from_utf8_lossy(&e.into_inner()));
-                    result.push_str("]]>\n");
-                }
-                Ok(Event::Comment(e)) => {
-                    if let Some(tag) = pending_start_tag.take() {
-                        result.push_str(&tag);
-                        result.push('\n');
-                        indent_level += 1;
-                    }
-                    for _ in 0..indent_level {
-                        result.push_str("  ");
-                    }
-                    result.push_str("<!--");
-                    result.push_str(&String::from_utf8_lossy(&e.into_inner()));
-                    result.push_str("-->\n");
-                }
-                Ok(Event::PI(e)) => {
-                    result.push_str("<?");
-                    result.push_str(&String::from_utf8_lossy(&e.into_inner()));
-                    result.push_str("?>\n");
-                }
-                Ok(Event::DocType(e)) => {
-                    result.push_str("<!DOCTYPE ");
-                    result.push_str(&String::from_utf8_lossy(&e.into_inner()));
-                    result.push_str(">\n");
-                }
-                Ok(_) => {
-                    // Ignore other event types (e.g., GeneralRef in some quick-xml versions)
-                }
-                Err(_) => {
-                    // If parsing fails, return original XML
-                    return xml.to_string();
                 }
             }
+
+            // Closing tag
+            writer.write_event(Event::End(BytesEnd::new(&element.name)))?;
         }
 
-        result
+        Ok(())
     }
-
-    /// Format a start tag with its attributes
-    fn format_start_tag(e: &quick_xml::events::BytesStart) -> String {
-        let tag_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
-        let mut tag_str = format!("<{}", Self::escape_xml(&tag_name));
-
-        for attr in e.attributes().flatten() {
-            let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
-            let value = String::from_utf8_lossy(&attr.value).to_string();
-            tag_str.push_str(&format!(" {}=\"{}\"", key, value));
-        }
-        tag_str.push('>');
-        tag_str
-    }
-
-    /// Escape special XML characters
-    fn escape_xml(s: &str) -> String {
-        s.replace('&', "&amp;")
-            .replace('<', "&lt;")
-            .replace('>', "&gt;")
-            .replace('"', "&quot;")
-            .replace('\'', "&apos;")
-    }
-}
-
-/// XML content with separated attributes and children
-struct XmlContent {
-    /// Attributes as string (e.g., ` attr1="val1" attr2="val2"`)
-    attributes: String,
-    /// Child elements as string
-    children: String,
 }
 
 /// Context for XML generation (tracks visited structs to prevent loops)
@@ -320,19 +224,17 @@ impl<'a> XmlContext<'a> {
         }
     }
 
-    fn build_struct_xml(
+    /// Build struct content and add to parent element
+    fn build_struct_content(
         &mut self,
+        parent: &mut XmlElement,
         struct_index: u32,
         variant_index: u32,
-        _name: &str,
-    ) -> Result<XmlContent> {
+    ) -> Result<()> {
         // Check for recursion
         let key = (struct_index, variant_index);
         if self.struct_stack.contains(&key) || self.struct_stack.len() > MAX_POINTER_DEPTH {
-            return Ok(XmlContent {
-                attributes: String::new(),
-                children: String::new(),
-            });
+            return Ok(());
         }
         self.struct_stack.insert(key);
 
@@ -346,16 +248,12 @@ impl<'a> XmlContext<'a> {
                     + (struct_def.record_size as u64 * variant_index as u64)
             }
             None => {
-                return Ok(XmlContent {
-                    attributes: String::new(),
-                    children: String::new(),
-                })
+                self.struct_stack.remove(&key);
+                return Ok(());
             }
         };
 
-        // Read all properties - separate attributes from children
-        let mut attributes = String::new();
-        let mut children = String::new();
+        // Read all properties
         let mut cursor = Cursor::new(self.df.data());
         cursor.seek(SeekFrom::Start(data_offset))?;
 
@@ -372,42 +270,47 @@ impl<'a> XmlContext<'a> {
 
             match prop.conversion_type {
                 ConversionType::Attribute => {
-                    let attr_xml = self.read_attribute_value(&mut cursor, prop, &prop_name)?;
-                    attributes.push_str(&attr_xml);
+                    self.read_attribute_value(parent, &mut cursor, prop, &prop_name)?;
                     self.node_count += 1;
                 }
                 _ => {
-                    let child_xml = self.read_array_value(&mut cursor, prop, &prop_name)?;
-                    children.push_str(&child_xml);
+                    self.read_array_value(parent, &mut cursor, prop, &prop_name)?;
                 }
             }
         }
 
         self.struct_stack.remove(&key);
-        Ok(XmlContent {
-            attributes,
-            children,
-        })
+        Ok(())
     }
 
-    /// Build XML for an inline struct (data at current cursor position)
-    fn build_inline_struct_xml(
+    /// Build struct and return as XmlElement
+    fn build_struct_element(
         &mut self,
+        name: &str,
+        struct_index: u32,
+        variant_index: u32,
+    ) -> Result<XmlElement> {
+        let mut element = XmlElement::new(name);
+        self.build_struct_content(&mut element, struct_index, variant_index)?;
+        Ok(element)
+    }
+
+    /// Build inline struct content at current cursor position
+    fn build_inline_struct_content(
+        &mut self,
+        parent: &mut XmlElement,
         cursor: &mut Cursor<&[u8]>,
         struct_index: u32,
-        _name: &str,
-    ) -> Result<String> {
+    ) -> Result<()> {
         // Check for recursion
-        let key = (struct_index, 0xFFFFFFFF); // Use special variant for inline
+        let key = (struct_index, 0xFFFFFFFF);
         if self.struct_stack.contains(&key) || self.struct_stack.len() > MAX_POINTER_DEPTH {
-            return Ok(String::new());
+            return Ok(());
         }
         self.struct_stack.insert(key);
 
         // Get all properties including inherited ones
         let properties = self.get_all_properties(struct_index)?;
-
-        let mut xml = String::new();
 
         for prop_idx in properties {
             if self.node_count >= MAX_NODES {
@@ -419,19 +322,17 @@ impl<'a> XmlContext<'a> {
 
             match prop.conversion_type {
                 ConversionType::Attribute => {
-                    let attr_xml = self.read_attribute_value(cursor, prop, &prop_name)?;
-                    xml.push_str(&attr_xml);
+                    self.read_attribute_value(parent, cursor, prop, &prop_name)?;
                     self.node_count += 1;
                 }
                 _ => {
-                    let array_xml = self.read_array_value(cursor, prop, &prop_name)?;
-                    xml.push_str(&array_xml);
+                    self.read_array_value(parent, cursor, prop, &prop_name)?;
                 }
             }
         }
 
         self.struct_stack.remove(&key);
-        Ok(xml)
+        Ok(())
     }
 
     fn get_all_properties(&self, struct_index: u32) -> Result<Vec<usize>> {
@@ -464,95 +365,79 @@ impl<'a> XmlContext<'a> {
         Ok(props)
     }
 
+    /// Read an attribute value and add to parent element
     fn read_attribute_value(
         &mut self,
+        parent: &mut XmlElement,
         cursor: &mut Cursor<&[u8]>,
         prop: &PropertyDefinition,
         name: &str,
-    ) -> Result<String> {
-        let escaped_name = DataForge::escape_xml(name);
-
+    ) -> Result<()> {
         match prop.data_type {
             DataType::Boolean => {
                 let val = cursor.read_u8()? != 0;
-                Ok(format!(
-                    " {}=\"{}\"",
-                    escaped_name,
-                    if val { "1" } else { "0" }
-                ))
+                parent.add_attr(name, if val { "1" } else { "0" });
             }
             DataType::Int8 => {
                 let val = cursor.read_i8()?;
-                Ok(format!(" {}=\"{}\"", escaped_name, val))
+                parent.add_attr(name, val.to_string());
             }
             DataType::Int16 => {
                 let val = cursor.read_i16::<LittleEndian>()?;
-                Ok(format!(" {}=\"{}\"", escaped_name, val))
+                parent.add_attr(name, val.to_string());
             }
             DataType::Int32 => {
                 let val = cursor.read_i32::<LittleEndian>()?;
-                Ok(format!(" {}=\"{}\"", escaped_name, val))
+                parent.add_attr(name, val.to_string());
             }
             DataType::Int64 => {
                 let val = cursor.read_i64::<LittleEndian>()?;
-                Ok(format!(" {}=\"{}\"", escaped_name, val))
+                parent.add_attr(name, val.to_string());
             }
             DataType::UInt8 => {
                 let val = cursor.read_u8()?;
-                Ok(format!(" {}=\"{}\"", escaped_name, val))
+                parent.add_attr(name, val.to_string());
             }
             DataType::UInt16 => {
                 let val = cursor.read_u16::<LittleEndian>()?;
-                Ok(format!(" {}=\"{}\"", escaped_name, val))
+                parent.add_attr(name, val.to_string());
             }
             DataType::UInt32 => {
                 let val = cursor.read_u32::<LittleEndian>()?;
-                Ok(format!(" {}=\"{}\"", escaped_name, val))
+                parent.add_attr(name, val.to_string());
             }
             DataType::UInt64 => {
                 let val = cursor.read_u64::<LittleEndian>()?;
-                Ok(format!(" {}=\"{}\"", escaped_name, val))
+                parent.add_attr(name, val.to_string());
             }
             DataType::Single => {
                 let val = cursor.read_f32::<LittleEndian>()?;
-                Ok(format!(" {}=\"{}\"", escaped_name, val))
+                parent.add_attr(name, val.to_string());
             }
             DataType::Double => {
                 let val = cursor.read_f64::<LittleEndian>()?;
-                Ok(format!(" {}=\"{}\"", escaped_name, val))
+                parent.add_attr(name, val.to_string());
             }
             DataType::Guid => {
                 let mut bytes = [0u8; 16];
                 cursor.read_exact(&mut bytes)?;
                 let guid = DataForgeGuid { bytes };
-                Ok(format!(" {}=\"{}\"", escaped_name, guid.to_string()))
+                parent.add_attr(name, guid.to_string());
             }
             DataType::String => {
                 let offset = cursor.read_u32::<LittleEndian>()?;
                 let val = self.df.read_text_at_offset(offset as u64)?;
-                Ok(format!(
-                    " {}=\"{}\"",
-                    escaped_name,
-                    DataForge::escape_xml(&val)
-                ))
+                parent.add_attr(name, val);
             }
             DataType::Locale => {
                 let offset = cursor.read_u32::<LittleEndian>()?;
                 let val = self.df.read_text_at_offset(offset as u64)?;
-                Ok(format!(
-                    " {}=\"{}\"",
-                    escaped_name,
-                    DataForge::escape_xml(&val)
-                ))
+                parent.add_attr(name, val);
             }
             DataType::Enum => {
                 let offset = cursor.read_u32::<LittleEndian>()?;
                 let val = self.df.read_text_at_offset(offset as u64)?;
-                Ok(format!(
-                    " {}=\"{}\"",
-                    escaped_name,
-                    DataForge::escape_xml(&val)
-                ))
+                parent.add_attr(name, val);
             }
             DataType::Reference => {
                 let _item1 = cursor.read_u32::<LittleEndian>()?;
@@ -560,9 +445,9 @@ impl<'a> XmlContext<'a> {
                 cursor.read_exact(&mut bytes)?;
                 let guid = DataForgeGuid { bytes };
                 if guid.is_empty() {
-                    Ok(format!(" {}=\"null\"", escaped_name))
+                    parent.add_attr(name, "null");
                 } else {
-                    Ok(format!(" {}=\"{}\"", escaped_name, guid.to_string()))
+                    parent.add_attr(name, guid.to_string());
                 }
             }
             DataType::StrongPointer | DataType::WeakPointer => {
@@ -571,57 +456,55 @@ impl<'a> XmlContext<'a> {
                 let _padding = cursor.read_u16::<LittleEndian>()?;
 
                 if struct_idx == 0xFFFFFFFF {
-                    Ok(format!(" {}=\"null\"", escaped_name))
+                    parent.add_attr(name, "null");
                 } else {
                     let struct_name = self.df.get_struct_name(struct_idx as usize)?;
-                    Ok(format!(
-                        " {}=\"{}[{:04X}]\"",
-                        escaped_name, struct_name, variant_idx
-                    ))
+                    parent.add_attr(name, format!("{}[{:04X}]", struct_name, variant_idx));
                 }
             }
             DataType::Class => {
-                // Inline class - data is stored at current cursor position
-                // We need to read properties of the nested struct directly from cursor
-                let content = self.build_inline_struct_xml(cursor, prop.index as u32, name)?;
-                if content.is_empty() {
-                    Ok(format!("<{} />", escaped_name))
-                } else {
-                    Ok(format!("<{}{}></{}>", escaped_name, content, escaped_name))
-                }
+                // Inline class - add as child element
+                let mut child = XmlElement::new(name);
+                self.build_inline_struct_content(&mut child, cursor, prop.index as u32)?;
+                parent.add_element(child);
             }
-            DataType::Unknown(t) => Ok(format!(" {}=\"Unknown type {}\"", escaped_name, t)),
+            DataType::Unknown(t) => {
+                parent.add_attr(name, format!("Unknown type {}", t));
+            }
         }
+
+        Ok(())
     }
 
+    /// Read an array value and add to parent element
     fn read_array_value(
         &mut self,
+        parent: &mut XmlElement,
         cursor: &mut Cursor<&[u8]>,
         prop: &PropertyDefinition,
         name: &str,
-    ) -> Result<String> {
+    ) -> Result<()> {
         let array_count = cursor.read_u32::<LittleEndian>()?;
         let first_index = cursor.read_u32::<LittleEndian>()?;
 
         if array_count == 0 {
-            return Ok(String::new());
+            return Ok(());
         }
 
-        let escaped_name = DataForge::escape_xml(name);
-        let mut xml = format!("<{}>", escaped_name);
+        let mut container = XmlElement::new(name);
 
         for i in 0..array_count.min(MAX_NODES as u32) {
             if self.node_count >= MAX_NODES {
                 break;
             }
 
-            let item_xml = self.read_array_item(prop, first_index, i as u16)?;
-            xml.push_str(&item_xml);
+            let item = self.read_array_item(prop, first_index, i as u16)?;
+            container.add_child(item);
             self.node_count += 1;
         }
 
-        xml.push_str(&format!("</{}>", escaped_name));
-        Ok(xml)
+        parent.add_element(container);
+        Ok(())
     }
 
     fn read_array_item(
@@ -629,7 +512,7 @@ impl<'a> XmlContext<'a> {
         prop: &PropertyDefinition,
         first_index: u32,
         offset: u16,
-    ) -> Result<String> {
+    ) -> Result<XmlNode> {
         let index = first_index as u64 + offset as u64;
 
         match prop.data_type {
@@ -637,89 +520,114 @@ impl<'a> XmlContext<'a> {
                 let val: bool = self
                     .df
                     .read_value_at(self.df.boolean_value_offset() + index)?;
-                Ok(format!(
-                    "<Boolean>{}</Boolean>",
-                    if val { "1" } else { "0" }
-                ))
+                let mut elem = XmlElement::new("Boolean");
+                elem.add_child(XmlNode::Text(if val { "1" } else { "0" }.to_string()));
+                Ok(XmlNode::Element(elem))
             }
             DataType::Int8 => {
                 let val: i8 = self.df.read_value_at(self.df.int8_value_offset() + index)?;
-                Ok(format!("<Int8>{}</Int8>", val))
+                let mut elem = XmlElement::new("Int8");
+                elem.add_child(XmlNode::Text(val.to_string()));
+                Ok(XmlNode::Element(elem))
             }
             DataType::Int16 => {
                 let val: i16 = self
                     .df
                     .read_value_at(self.df.int16_value_offset() + index * 2)?;
-                Ok(format!("<Int16>{}</Int16>", val))
+                let mut elem = XmlElement::new("Int16");
+                elem.add_child(XmlNode::Text(val.to_string()));
+                Ok(XmlNode::Element(elem))
             }
             DataType::Int32 => {
                 let val: i32 = self
                     .df
                     .read_value_at(self.df.int32_value_offset() + index * 4)?;
-                Ok(format!("<Int32>{}</Int32>", val))
+                let mut elem = XmlElement::new("Int32");
+                elem.add_child(XmlNode::Text(val.to_string()));
+                Ok(XmlNode::Element(elem))
             }
             DataType::Int64 => {
                 let val: i64 = self
                     .df
                     .read_value_at(self.df.int64_value_offset() + index * 8)?;
-                Ok(format!("<Int64>{}</Int64>", val))
+                let mut elem = XmlElement::new("Int64");
+                elem.add_child(XmlNode::Text(val.to_string()));
+                Ok(XmlNode::Element(elem))
             }
             DataType::UInt8 => {
                 let val: u8 = self
                     .df
                     .read_value_at(self.df.uint8_value_offset() + index)?;
-                Ok(format!("<UInt8>{}</UInt8>", val))
+                let mut elem = XmlElement::new("UInt8");
+                elem.add_child(XmlNode::Text(val.to_string()));
+                Ok(XmlNode::Element(elem))
             }
             DataType::UInt16 => {
                 let val: u16 = self
                     .df
                     .read_value_at(self.df.uint16_value_offset() + index * 2)?;
-                Ok(format!("<UInt16>{}</UInt16>", val))
+                let mut elem = XmlElement::new("UInt16");
+                elem.add_child(XmlNode::Text(val.to_string()));
+                Ok(XmlNode::Element(elem))
             }
             DataType::UInt32 => {
                 let val: u32 = self
                     .df
                     .read_value_at(self.df.uint32_value_offset() + index * 4)?;
-                Ok(format!("<UInt32>{}</UInt32>", val))
+                let mut elem = XmlElement::new("UInt32");
+                elem.add_child(XmlNode::Text(val.to_string()));
+                Ok(XmlNode::Element(elem))
             }
             DataType::UInt64 => {
                 let val: u64 = self
                     .df
                     .read_value_at(self.df.uint64_value_offset() + index * 8)?;
-                Ok(format!("<UInt64>{}</UInt64>", val))
+                let mut elem = XmlElement::new("UInt64");
+                elem.add_child(XmlNode::Text(val.to_string()));
+                Ok(XmlNode::Element(elem))
             }
             DataType::Single => {
                 let val: f32 = self
                     .df
                     .read_value_at(self.df.single_value_offset() + index * 4)?;
-                Ok(format!("<Single>{}</Single>", val))
+                let mut elem = XmlElement::new("Single");
+                elem.add_child(XmlNode::Text(val.to_string()));
+                Ok(XmlNode::Element(elem))
             }
             DataType::Double => {
                 let val: f64 = self
                     .df
                     .read_value_at(self.df.double_value_offset() + index * 8)?;
-                Ok(format!("<Double>{}</Double>", val))
+                let mut elem = XmlElement::new("Double");
+                elem.add_child(XmlNode::Text(val.to_string()));
+                Ok(XmlNode::Element(elem))
             }
             DataType::String => {
                 let str_offset: u32 = self
                     .df
                     .read_value_at(self.df.string_value_offset() + index * 4)?;
                 let val = self.df.read_text_at_offset(str_offset as u64)?;
-                Ok(format!("<String>{}</String>", DataForge::escape_xml(&val)))
+                let mut elem = XmlElement::new("String");
+                elem.add_child(XmlNode::Text(val));
+                Ok(XmlNode::Element(elem))
             }
             DataType::Locale => {
                 let str_offset: u32 = self
                     .df
                     .read_value_at(self.df.locale_value_offset() + index * 4)?;
                 let val = self.df.read_text_at_offset(str_offset as u64)?;
-                Ok(format!("<Locale>{}</Locale>", DataForge::escape_xml(&val)))
+                let mut elem = XmlElement::new("Locale");
+                elem.add_child(XmlNode::Text(val));
+                Ok(XmlNode::Element(elem))
             }
             DataType::Enum => {
                 let str_offset: u32 = self
                     .df
                     .read_value_at(self.df.enum_value_offset() + index * 4)?;
                 let val = self.df.read_text_at_offset(str_offset as u64)?;
-                Ok(format!("<Enum>{}</Enum>", DataForge::escape_xml(&val)))
+                let mut elem = XmlElement::new("Enum");
+                elem.add_child(XmlNode::Text(val));
+                Ok(XmlNode::Element(elem))
             }
             DataType::Guid => {
                 let offset = self.df.guid_value_offset() + index * 16;
@@ -742,35 +650,20 @@ impl<'a> XmlContext<'a> {
                     self.df.data()[offset as usize + 15],
                 ];
                 let guid = DataForgeGuid { bytes };
-                Ok(format!("<Guid>{}</Guid>", guid.to_string()))
+                let mut elem = XmlElement::new("Guid");
+                elem.add_child(XmlNode::Text(guid.to_string()));
+                Ok(XmlNode::Element(elem))
             }
             DataType::Class => {
                 // Array of structs
                 let mapping = &self.df.data_mappings()[prop.index as usize];
                 let struct_name = self.df.get_struct_name(mapping.struct_index as usize)?;
-                let content = self.build_struct_xml(
+                let element = self.build_struct_element(
+                    &struct_name,
                     prop.index as u32,
                     first_index + offset as u32,
-                    &struct_name,
                 )?;
-                let escaped_name = DataForge::escape_xml(&struct_name);
-                let has_content = !content.attributes.is_empty() || !content.children.is_empty();
-
-                if has_content {
-                    let mut tag = format!("<{}", escaped_name);
-                    tag.push_str(&content.attributes);
-                    if content.children.is_empty() {
-                        tag.push_str(" />");
-                        Ok(tag)
-                    } else {
-                        tag.push('>');
-                        tag.push_str(&content.children);
-                        tag.push_str(&format!("</{}>", escaped_name));
-                        Ok(tag)
-                    }
-                } else {
-                    Ok(format!("<{} />", escaped_name))
-                }
+                Ok(XmlNode::Element(element))
             }
             DataType::StrongPointer => {
                 let offset = self.df.strong_value_offset() + index * 8;
@@ -778,30 +671,14 @@ impl<'a> XmlContext<'a> {
                 let variant_idx: u16 = self.df.read_value_at(offset + 4)?;
 
                 if struct_idx == 0xFFFFFFFF {
-                    Ok("<StrongPointer>null</StrongPointer>".to_string())
+                    let mut elem = XmlElement::new("StrongPointer");
+                    elem.add_child(XmlNode::Text("null".to_string()));
+                    Ok(XmlNode::Element(elem))
                 } else {
                     let struct_name = self.df.get_struct_name(struct_idx as usize)?;
-                    let content =
-                        self.build_struct_xml(struct_idx, variant_idx as u32, &struct_name)?;
-                    let escaped_name = DataForge::escape_xml(&struct_name);
-                    let has_content =
-                        !content.attributes.is_empty() || !content.children.is_empty();
-
-                    if has_content {
-                        let mut tag = format!("<{}", escaped_name);
-                        tag.push_str(&content.attributes);
-                        if content.children.is_empty() {
-                            tag.push_str(" />");
-                            Ok(tag)
-                        } else {
-                            tag.push('>');
-                            tag.push_str(&content.children);
-                            tag.push_str(&format!("</{}>", escaped_name));
-                            Ok(tag)
-                        }
-                    } else {
-                        Ok(format!("<{} />", escaped_name))
-                    }
+                    let element =
+                        self.build_struct_element(&struct_name, struct_idx, variant_idx as u32)?;
+                    Ok(XmlNode::Element(element))
                 }
             }
             DataType::WeakPointer => {
@@ -809,15 +686,17 @@ impl<'a> XmlContext<'a> {
                 let struct_idx: u32 = self.df.read_value_at(offset)?;
                 let variant_idx: u16 = self.df.read_value_at(offset + 4)?;
 
+                let mut elem = XmlElement::new("WeakPointer");
                 if struct_idx == 0xFFFFFFFF {
-                    Ok("<WeakPointer>null</WeakPointer>".to_string())
+                    elem.add_child(XmlNode::Text("null".to_string()));
                 } else {
                     let struct_name = self.df.get_struct_name(struct_idx as usize)?;
-                    Ok(format!(
-                        "<WeakPointer>{}[{:04X}]</WeakPointer>",
+                    elem.add_child(XmlNode::Text(format!(
+                        "{}[{:04X}]",
                         struct_name, variant_idx
-                    ))
+                    )));
                 }
+                Ok(XmlNode::Element(elem))
             }
             DataType::Reference => {
                 let offset = self.df.reference_value_offset() + index * 20;
@@ -841,13 +720,19 @@ impl<'a> XmlContext<'a> {
                     self.df.data()[offset as usize + 19],
                 ];
                 let guid = DataForgeGuid { bytes };
+                let mut elem = XmlElement::new("Reference");
                 if guid.is_empty() {
-                    Ok("<Reference>null</Reference>".to_string())
+                    elem.add_child(XmlNode::Text("null".to_string()));
                 } else {
-                    Ok(format!("<Reference>{}</Reference>", guid.to_string()))
+                    elem.add_child(XmlNode::Text(guid.to_string()));
                 }
+                Ok(XmlNode::Element(elem))
             }
-            DataType::Unknown(t) => Ok(format!("<Unknown>type {}</Unknown>", t)),
+            DataType::Unknown(t) => {
+                let mut elem = XmlElement::new("Unknown");
+                elem.add_child(XmlNode::Text(format!("type {}", t)));
+                Ok(XmlNode::Element(elem))
+            }
         }
     }
 }
