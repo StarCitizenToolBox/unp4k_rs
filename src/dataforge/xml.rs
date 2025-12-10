@@ -110,37 +110,171 @@ impl DataForge {
     }
 
     /// Format an XML string with proper indentation for human readability
-    /// Uses quick-xml library for reliable XML parsing
+    /// Implements VSCode-style formatting:
+    /// - 2 space indentation
+    /// - Short text content stays inline with tags (e.g., `<Name>Value</Name>`)
+    /// - Only nested elements get newlines and indentation
     fn format_xml_string(xml: &str) -> String {
         use quick_xml::events::Event;
         use quick_xml::Reader;
-        use quick_xml::Writer;
 
         let mut reader = Reader::from_str(xml);
         reader.config_mut().trim_text(true);
 
-        let mut writer = Writer::new_with_indent(Cursor::new(Vec::new()), b' ', 2);
+        let mut result = String::with_capacity(xml.len() * 2);
+        let mut indent_level: usize = 0;
+        let mut pending_start_tag: Option<String> = None;
+        let mut pending_text: Option<String> = None;
 
         loop {
             match reader.read_event() {
                 Ok(Event::Eof) => break,
-                Ok(event) => {
-                    if let Err(_e) = writer.write_event(event) {
-                        // If writing fails, return original XML
-                        return xml.to_string();
+                Ok(Event::Decl(decl)) => {
+                    // XML declaration
+                    result.push_str("<?xml");
+                    if let Ok(version) = decl.version() {
+                        result.push_str(&format!(
+                            " version=\"{}\"",
+                            String::from_utf8_lossy(&version)
+                        ));
+                    }
+                    if let Some(Ok(encoding)) = decl.encoding() {
+                        result.push_str(&format!(
+                            " encoding=\"{}\"",
+                            String::from_utf8_lossy(&encoding)
+                        ));
+                    }
+                    result.push_str("?>\n");
+                }
+                Ok(Event::Start(e)) => {
+                    // Flush any pending content
+                    if let Some(tag) = pending_start_tag.take() {
+                        result.push_str(&tag);
+                        result.push('\n');
+                        indent_level += 1;
+                    }
+                    pending_text = None;
+
+                    // Write indentation
+                    for _ in 0..indent_level {
+                        result.push_str("  ");
+                    }
+
+                    // Build the start tag
+                    let tag_str = Self::format_start_tag(&e);
+                    pending_start_tag = Some(tag_str);
+                }
+                Ok(Event::End(e)) => {
+                    let tag_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+
+                    if let Some(start_tag) = pending_start_tag.take() {
+                        if let Some(text) = pending_text.take() {
+                            // Inline format: <Tag>text</Tag>
+                            result.push_str(&start_tag);
+                            result.push_str(&text);
+                            result.push_str(&format!("</{}>\n", Self::escape_xml(&tag_name)));
+                        } else {
+                            // Self-closing style for empty elements
+                            let self_closing =
+                                start_tag.trim_end_matches('>').to_string() + " />\n";
+                            result.push_str(&self_closing);
+                        }
+                    } else {
+                        // Regular closing tag with indentation
+                        indent_level = indent_level.saturating_sub(1);
+                        for _ in 0..indent_level {
+                            result.push_str("  ");
+                        }
+                        result.push_str(&format!("</{}>\n", Self::escape_xml(&tag_name)));
+                    }
+                    pending_text = None;
+                }
+                Ok(Event::Empty(e)) => {
+                    // Flush any pending content
+                    if let Some(tag) = pending_start_tag.take() {
+                        result.push_str(&tag);
+                        result.push('\n');
+                        indent_level += 1;
+                    }
+                    pending_text = None;
+
+                    // Write indentation
+                    for _ in 0..indent_level {
+                        result.push_str("  ");
+                    }
+
+                    // Write self-closing tag
+                    let tag_str = Self::format_start_tag(&e);
+                    let self_closing = tag_str.trim_end_matches('>').to_string() + " />\n";
+                    result.push_str(&self_closing);
+                }
+                Ok(Event::Text(e)) => {
+                    let text = String::from_utf8_lossy(&e).to_string();
+                    if !text.trim().is_empty() {
+                        pending_text = Some(text.trim().to_string());
                     }
                 }
-                Err(_e) => {
+                Ok(Event::CData(e)) => {
+                    if let Some(tag) = pending_start_tag.take() {
+                        result.push_str(&tag);
+                        result.push('\n');
+                        indent_level += 1;
+                    }
+                    for _ in 0..indent_level {
+                        result.push_str("  ");
+                    }
+                    result.push_str("<![CDATA[");
+                    result.push_str(&String::from_utf8_lossy(&e.into_inner()));
+                    result.push_str("]]>\n");
+                }
+                Ok(Event::Comment(e)) => {
+                    if let Some(tag) = pending_start_tag.take() {
+                        result.push_str(&tag);
+                        result.push('\n');
+                        indent_level += 1;
+                    }
+                    for _ in 0..indent_level {
+                        result.push_str("  ");
+                    }
+                    result.push_str("<!--");
+                    result.push_str(&String::from_utf8_lossy(&e.into_inner()));
+                    result.push_str("-->\n");
+                }
+                Ok(Event::PI(e)) => {
+                    result.push_str("<?");
+                    result.push_str(&String::from_utf8_lossy(&e.into_inner()));
+                    result.push_str("?>\n");
+                }
+                Ok(Event::DocType(e)) => {
+                    result.push_str("<!DOCTYPE ");
+                    result.push_str(&String::from_utf8_lossy(&e.into_inner()));
+                    result.push_str(">\n");
+                }
+                Ok(_) => {
+                    // Ignore other event types (e.g., GeneralRef in some quick-xml versions)
+                }
+                Err(_) => {
                     // If parsing fails, return original XML
                     return xml.to_string();
                 }
             }
         }
 
-        match String::from_utf8(writer.into_inner().into_inner()) {
-            Ok(formatted) => formatted + "\n",
-            Err(_) => xml.to_string(),
+        result
+    }
+
+    /// Format a start tag with its attributes
+    fn format_start_tag(e: &quick_xml::events::BytesStart) -> String {
+        let tag_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+        let mut tag_str = format!("<{}", Self::escape_xml(&tag_name));
+
+        for attr in e.attributes().flatten() {
+            let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
+            let value = String::from_utf8_lossy(&attr.value).to_string();
+            tag_str.push_str(&format!(" {}=\"{}\"", key, value));
         }
+        tag_str.push('>');
+        tag_str
     }
 
     /// Escape special XML characters
