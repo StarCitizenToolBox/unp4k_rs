@@ -30,12 +30,14 @@
 //! # Ok::<(), unp4k::Error>(())
 //! ```
 
-mod types;
-mod header;
 mod definitions;
+mod header;
 mod reader;
+mod types;
+pub mod utils;
 mod xml;
 
-pub use types::*;
 pub use header::DataForgeHeader;
 pub use reader::DataForge;
+pub use types::*;
+pub use utils::{convert_dcb, export_merged, export_separate, show_dcb_info};

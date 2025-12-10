@@ -5,6 +5,28 @@ A Rust implementation of [unp4k](https://github.com/dolkensp/unp4k) - a tool for
 > [!NOTE]
 > The functionality to modify/create P4K is experimental; it is only used for testing local tools and cannot be verified by the game.
 
+## Installation
+
+### From Git (Recommended)
+
+```bash
+cargo install --git https://github.com/StarCitizenToolBox/unp4k_rs.git
+```
+
+### From Source
+
+```bash
+git clone https://github.com/StarCitizenToolBox/unp4k_rs.git
+cd unp4k_rs
+cargo install --path .
+```
+
+### Verify Installation
+
+```bash
+unp4k --help
+```
+
 ## Features
 
 - 📦 Open and extract Star Citizen `.p4k` archives
@@ -12,7 +34,7 @@ A Rust implementation of [unp4k](https://github.com/dolkensp/unp4k) - a tool for
 - 🔐 AES-128-CBC encryption/decryption support
 - 🗜️ Support for STORE, DEFLATE, and ZSTD compression
 - 📝 CryXML binary format to standard XML conversion
-- 🚀 Fast parallel extraction
+- 📊 DataForge/DCB binary format to XML conversion
 - 💻 Cross-platform (Windows, macOS, Linux)
 
 ## Usage
@@ -82,8 +104,8 @@ unp4k pack output.p4k ./my_files -b Data/MyMod
 # Files in patch directory will replace matching files in the P4K
 unp4k patch Data.p4k ./patches
 
-# Save to a new file
-unp4k patch Data.p4k ./patches -o Data_patched.p4k
+# With base path prefix
+unp4k patch Data.p4k ./patches -b Data/Localization
 ```
 
 ### Add a Single File
@@ -96,14 +118,34 @@ unp4k add Data.p4k myfile.xml
 unp4k add Data.p4k myfile.xml -a Data/Config/myfile.xml
 ```
 
+### Replace a Single File
+
+```bash
+# Replace a file in the archive (keeps original compression settings)
+unp4k replace Data.p4k myfile.xml Data/Config/myfile.xml
+```
+
 ### Delete Files
 
 ```bash
 # Delete files matching patterns
 unp4k delete Data.p4k "*.tmp" "*.bak"
+```
 
-# Save to a new file
-unp4k delete Data.p4k "*.tmp" -o Data_clean.p4k
+### Convert DataForge/DCB to XML
+
+```bash
+# Show DCB file info
+unp4k dcb Game.dcb --info
+
+# Convert to separate XML files (like upstream unp4k)
+unp4k dcb Game.dcb
+
+# Convert to a single merged XML file
+unp4k dcb Game.dcb --merge
+
+# Specify output directory
+unp4k dcb Game.dcb -o ./output
 ```
 
 ## Library Usage
@@ -169,7 +211,6 @@ fn modify_archive() -> anyhow::Result<()> {
     modifier.save("Data_modified.p4k")?;
     Ok(())
 }
-```
 ```
 
 ## File Format
