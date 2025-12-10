@@ -231,4 +231,4 @@ The `.p4k` files are encrypted ZIP archives with custom features:
 
 ## License
 
-GNU AFFERO GENERAL PUBLIC LICENSE Version 3
+GNU GENERAL PUBLIC LICENSE Version 3
