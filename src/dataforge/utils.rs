@@ -208,3 +208,95 @@ pub fn extract_to_memory(df: &DataForge, path: &str, format_xml: bool) -> Result
 pub fn extract_all_to_memory(df: &DataForge, format_xml: bool) -> Result<HashMap<String, String>> {
     Ok(df.extract_all_to_memory(format_xml)?)
 }
+
+/// A single match within a DCB record
+#[derive(Debug, Clone)]
+pub struct DcbSearchMatch {
+    /// Line number where the match was found (1-indexed)
+    pub line_number: usize,
+    /// Content of the matching line (truncated if too long)
+    pub line_content: String,
+}
+
+/// Search result for a single DCB record
+#[derive(Debug, Clone)]
+pub struct DcbSearchResult {
+    /// The record path
+    pub path: String,
+    /// The record index
+    pub index: usize,
+    /// List of matches within this record
+    pub matches: Vec<DcbSearchMatch>,
+}
+
+/// Full-text search across all DCB records
+///
+/// Searches both record paths and their XML content for the given query.
+/// Uses parallel processing for performance.
+///
+/// # Arguments
+/// * `df` - The DataForge instance
+/// * `query` - The search query (case-insensitive)
+///
+/// # Returns
+/// A vector of search results, sorted by path. Each record can have up to 11 matches
+/// (allowing applications to display "10+").
+pub fn search_records(df: &DataForge, query: &str) -> Vec<DcbSearchResult> {
+    use rayon::prelude::*;
+
+    let query_lower = query.to_lowercase();
+
+    // Collect all record paths and indices
+    let records: Vec<(String, usize)> = df
+        .path_to_record()
+        .iter()
+        .map(|(path, &index)| (path.clone(), index))
+        .collect();
+
+    // Use rayon for parallel search
+    let mut results: Vec<DcbSearchResult> = records
+        .par_iter()
+        .filter_map(|(path, index)| {
+            // First check if path matches
+            let path_matches = path.to_lowercase().contains(&query_lower);
+
+            // Try to get XML and search content
+            if let Ok(xml) = df.record_to_xml_by_index(*index, true) {
+                let mut matches = Vec::new();
+
+                for (line_num, line) in xml.lines().enumerate() {
+                    if line.to_lowercase().contains(&query_lower) {
+                        let line_content = if line.len() > 200 {
+                            format!("{}...", &line[..200])
+                        } else {
+                            line.to_string()
+                        };
+                        matches.push(DcbSearchMatch {
+                            line_number: line_num + 1,
+                            line_content,
+                        });
+
+                        // Keep up to 11 matches per record (for "10+" display)
+                        if matches.len() >= 11 {
+                            break;
+                        }
+                    }
+                }
+
+                if path_matches || !matches.is_empty() {
+                    return Some(DcbSearchResult {
+                        path: path.clone(),
+                        index: *index,
+                        matches,
+                    });
+                }
+            }
+            None
+        })
+        .collect();
+
+    // Sort by path for stable results
+    results.sort_by(|a, b| a.path.cmp(&b.path));
+
+    results
+}

@@ -42,5 +42,5 @@ pub use reader::DataForge;
 pub use types::*;
 pub use utils::{
     convert_dcb, export_merged, export_separate, extract_all_to_memory, extract_to_memory,
-    get_record_list, show_dcb_info,
+    get_record_list, search_records, show_dcb_info, DcbSearchMatch, DcbSearchResult,
 };
