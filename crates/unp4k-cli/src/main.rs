@@ -7,6 +7,7 @@
 //!   unp4k info <p4k_file>            - Show archive information
 //!   unp4k pack <output> <dir>        - Create a new P4K from directory
 //!   unp4k patch <p4k_file> <dir>     - Patch a P4K with files from directory
+//!   unp4k mcp <dcb_file>             - Start MCP server for DataForge data
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
@@ -152,6 +153,15 @@ enum Commands {
         #[arg(long)]
         info: bool,
     },
+    /// Start MCP (Model Context Protocol) server for DataForge/DCB data
+    #[cfg(feature = "mcp")]
+    Mcp {
+        /// Path to the .dcb file
+        dcb_file: PathBuf,
+        /// HTTP port to listen on
+        #[arg(short, long, default_value = "3721")]
+        port: u16,
+    },
 }
 
 fn main() -> Result<()> {
@@ -226,6 +236,13 @@ fn main() -> Result<()> {
         }) => {
             convert_dcb(&dcb_file, output.as_deref(), merge, info)?;
         }
+        #[cfg(feature = "mcp")]
+        Some(Commands::Mcp { dcb_file, port }) => {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(async {
+                dataforge_mcp::start_mcp_server(dcb_file.to_str().unwrap(), port).await
+            })?;
+        }
         None => {
             // Quick extract mode (like original unp4k)
             if let Some(p4k_file) = cli.p4k_file {
@@ -244,6 +261,8 @@ fn main() -> Result<()> {
                 eprintln!("       unp4k delete <p4k_file> <patterns...>");
                 eprintln!("       unp4k replace <p4k_file> <file> <archive_path>");
                 eprintln!("       unp4k dcb <dcb_file> [-o output] [-s]");
+                #[cfg(feature = "mcp")]
+                eprintln!("       unp4k mcp <dcb_file> [-p port]");
                 std::process::exit(1);
             }
         }

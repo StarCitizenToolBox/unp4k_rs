@@ -1,12 +1,12 @@
 [workspace]
-members = [".", "crates/unp4k-cli"]
+members = [".", "crates/unp4k-cli", "crates/dataforge-mcp"]
 
 [package]
 name = "unp4k"
 version = "0.1.0"
 edition = "2021"
 description = "A Rust library for extracting Star Citizen p4k files"
-license = "MIT"
+license = "gpl-3.0"
 authors = ["xkeyC"]
 
 [lib]

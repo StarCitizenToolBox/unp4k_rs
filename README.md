@@ -19,8 +19,13 @@ unp4k_rs/
 │   ├── dataforge/          # DataForge/DCB format parser
 │   └── ...
 └── crates/
-    └── unp4k-cli/          # Command-line tool (unp4k-cli)
-        └── src/main.rs
+    ├── unp4k-cli/          # Command-line tool (unp4k-cli)
+    │   └── src/main.rs
+    └── dataforge-mcp/      # MCP server for DataForge (optional)
+        └── src/
+            ├── lib.rs
+            ├── server.rs    # HTTP server with Streamable HTTP transport
+            └── tools.rs     # MCP tool definitions
 ```
 
 ## Installation
@@ -167,6 +172,33 @@ unp4k dcb Game.dcb --merge
 # Specify output directory
 unp4k dcb Game.dcb -o ./output
 ```
+
+### Start MCP Server for DataForge
+
+The MCP (Model Context Protocol) server allows AI assistants to query and search DataForge/DCB data:
+
+```bash
+# Start MCP server on default port (3721)
+unp4k mcp Game.dcb
+
+# Start on custom port
+unp4k mcp Game.dcb -p 8080
+```
+
+**Available MCP Tools:**
+
+| Tool | Description |
+|------|-------------|
+| `get_stats` | Get DataForge statistics and metadata |
+| `list_paths` | List record paths with keyword/regex filtering and pagination |
+| `get_content` | Get XML content of a specific record |
+| `batch_get_content` | Get XML content for multiple records (max 10) |
+| `search_in_paths` | Two-level filtering: path keyword + content keyword |
+| `full_text_search` | Search across all record paths and XML content |
+| `suggest_paths` | Path auto-completion based on prefix |
+| `list_directories` | Explore record hierarchy at different depths |
+
+> **Note:** DataForge files can contain 50000+ records (GB-level data). Always use `get_stats` first to understand data size, and use `count_only=true` with pagination for large queries.
 
 ## Library Usage
 
