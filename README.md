@@ -5,12 +5,31 @@ A Rust implementation of [unp4k](https://github.com/dolkensp/unp4k) - a tool for
 > [!NOTE]
 > The functionality to modify/create P4K is experimental; it is only used for testing local tools and cannot be verified by the game.
 
+## Project Structure
+
+This project is organized as a Cargo workspace:
+
+```
+unp4k_rs/
+├── src/                    # Core library (unp4k)
+│   ├── lib.rs
+│   ├── p4k.rs              # P4K archive reading
+│   ├── p4k_writer.rs       # P4K archive writing
+│   ├── cryxml.rs           # CryXML format conversion
+│   ├── dataforge/          # DataForge/DCB format parser
+│   └── ...
+└── crates/
+    └── unp4k-cli/          # Command-line tool (unp4k-cli)
+        └── src/main.rs
+```
+
 ## Installation
 
 ### From Git (Recommended)
 
 ```bash
-cargo install --git https://github.com/StarCitizenToolBox/unp4k_rs.git
+# Install CLI tool
+cargo install --git https://github.com/StarCitizenToolBox/unp4k_rs.git unp4k-cli
 ```
 
 ### From Source
@@ -18,7 +37,7 @@ cargo install --git https://github.com/StarCitizenToolBox/unp4k_rs.git
 ```bash
 git clone https://github.com/StarCitizenToolBox/unp4k_rs.git
 cd unp4k_rs
-cargo install --path .
+cargo install --path crates/unp4k-cli
 ```
 
 ### Verify Installation
@@ -35,9 +54,10 @@ unp4k --help
 - 🗜️ Support for STORE, DEFLATE, and ZSTD compression
 - 📝 CryXML binary format to standard XML conversion
 - 📊 DataForge/DCB binary format to XML conversion
+- 🔍 Full-text search across DCB records
 - 💻 Cross-platform (Windows, macOS, Linux)
 
-## Usage
+## CLI Usage
 
 ### Quick Extract (like original unp4k)
 
@@ -150,7 +170,14 @@ unp4k dcb Game.dcb -o ./output
 
 ## Library Usage
 
-Example:
+Add to your `Cargo.toml`:
+
+```toml
+[dependencies]
+unp4k = { git = "https://github.com/StarCitizenToolBox/unp4k_rs.git" }
+```
+
+### Reading P4K Archives
 
 ```rust
 use unp4k::{P4kFile, CryXmlReader};
@@ -209,6 +236,34 @@ fn modify_archive() -> anyhow::Result<()> {
     
     // Save to new file
     modifier.save("Data_modified.p4k")?;
+    Ok(())
+}
+```
+
+### DataForge/DCB Parsing
+
+```rust
+use unp4k::dataforge::{DataForge, search_records};
+
+fn main() -> anyhow::Result<()> {
+    let data = std::fs::read("Game.dcb")?;
+    let df = DataForge::parse(&data)?;
+    
+    // List record paths
+    for path in df.record_paths().take(10) {
+        println!("{}", path);
+    }
+    
+    // Convert a record to XML
+    let xml = df.record_to_xml("path/to/record", true)?;
+    println!("{}", xml);
+    
+    // Full-text search across all records
+    let results = search_records(&df, "vehicle");
+    for result in results {
+        println!("Found in: {} ({} matches)", result.path, result.matches.len());
+    }
+    
     Ok(())
 }
 ```
