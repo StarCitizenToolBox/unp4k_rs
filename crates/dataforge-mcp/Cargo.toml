@@ -1,0 +1,36 @@
+[package]
+name = "dataforge-mcp"
+version = "0.1.0"
+edition = "2021"
+description = "MCP (Model Context Protocol) server for Star Citizen DataForge/DCB data"
+license = "MIT"
+authors = ["xkeyC"]
+
+[lib]
+name = "dataforge_mcp"
+path = "src/lib.rs"
+
+[dependencies]
+# 核心库
+unp4k = { path = "../.." }
+# MCP SDK (使用其导出的 schemars)
+rmcp = { version = "0.11", features = ["server", "macros", "transport-streamable-http-server"] }
+# 异步运行时
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+# HTTP 服务器
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "server", "server-auto", "service"] }
+tower = "0.5"
+http-body-util = "0.1"
+# 序列化
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# 错误处理
+anyhow = "1.0.100"
+thiserror = "2.0"
+# 正则表达式
+regex = "1.11"
+# 日志
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

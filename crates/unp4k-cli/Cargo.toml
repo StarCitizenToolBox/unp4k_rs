@@ -1,0 +1,27 @@
+[package]
+name = "unp4k-cli"
+version = "0.1.0"
+edition = "2021"
+description = "CLI tool for extracting and modifying Star Citizen p4k files"
+license = "gpl-3.0"
+authors = ["xkeyC"]
+
+[[bin]]
+name = "unp4k"
+path = "src/main.rs"
+
+[features]
+default = ["mcp"]
+mcp = ["dep:dataforge-mcp", "dep:tokio"]
+
+[dependencies]
+# 核心库
+unp4k = { path = "../.." }
+# MCP 服务器 (可选)
+dataforge-mcp = { path = "../dataforge-mcp", optional = true }
+# 命令行解析
+clap = { version = "4.5.53", features = ["derive"] }
+# 错误处理
+anyhow = "1.0.100"
+# 异步运行时 (MCP 需要)
+tokio = { version = "1", features = ["full"], optional = true }
