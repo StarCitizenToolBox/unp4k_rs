@@ -3,7 +3,7 @@ name = "dataforge-mcp"
 version = "0.1.0"
 edition = "2021"
 description = "MCP (Model Context Protocol) server for Star Citizen DataForge/DCB data"
-license = "MIT"
+license = "gpl-3.0"
 authors = ["xkeyC"]
 
 [lib]
