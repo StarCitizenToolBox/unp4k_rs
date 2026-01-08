@@ -1,6 +1,6 @@
-//! Sopack (`.socpak`) file format handling
+//! Socpak (`.socpak`) file format handling
 //!
-//! Sopack files are standard ZIP archives used by Star Citizen.
+//! Socpak files are standard ZIP archives used by Star Citizen.
 //! This module provides extraction capabilities for `.socpak` files.
 
 use crate::error::{Error, Result};
@@ -21,12 +21,12 @@ use zip::ZipArchive;
 ///
 /// # Example
 /// ```no_run
-/// use unp4k::sopack::extract_sopack;
-/// let extracted = extract_sopack("file.socpak", None, false)?;
+/// use unp4k::socpak::extract_socpak;
+/// let extracted = extract_socpak("file.socpak", None, false)?;
 /// println!("Extracted {} files", extracted);
 /// # Ok::<(), unp4k::Error>(())
 /// ```
-pub fn extract_sopack<P: AsRef<Path>>(
+pub fn extract_socpak<P: AsRef<Path>>(
     socpak_path: P,
     output_dir: Option<P>,
     overwrite: bool,
@@ -113,15 +113,15 @@ pub fn extract_sopack<P: AsRef<Path>>(
 ///
 /// # Example
 /// ```no_run
-/// use unp4k::sopack::extract_sopack_from_memory;
+/// use unp4k::socpak::extract_socpak_from_memory;
 /// let socpak_data = std::fs::read("file.socpak")?;
-/// let contents = extract_sopack_from_memory(&socpak_data)?;
+/// let contents = extract_socpak_from_memory(&socpak_data)?;
 /// for (name, data) in contents {
 ///     println!("Extracted: {} ({} bytes)", name, data.len());
 /// }
 /// # Ok::<(), unp4k::Error>(())
 /// ```
-pub fn extract_sopack_from_memory(
+pub fn extract_socpak_from_memory(
     data: &[u8],
 ) -> Result<std::collections::HashMap<String, Vec<u8>>> {
     use std::collections::HashMap;
@@ -166,10 +166,10 @@ pub fn extract_sopack_from_memory(
     Ok(contents)
 }
 
-/// Entry information from a sopack file
+/// Entry information from a socpak file
 #[derive(Debug, Clone)]
-pub struct SopackEntryInfo {
-    /// Entry name/path within the sopack
+pub struct SocpakEntryInfo {
+    /// Entry name/path within the socpak
     pub name: String,
     /// Uncompressed size in bytes
     pub size: u64,
@@ -185,15 +185,15 @@ pub struct SopackEntryInfo {
 ///
 /// # Example
 /// ```no_run
-/// use unp4k::sopack::list_sopack_entries_from_memory;
+/// use unp4k::socpak::list_socpak_entries_from_memory;
 /// let socpak_data = std::fs::read("file.socpak")?;
-/// let entries = list_sopack_entries_from_memory(&socpak_data)?;
+/// let entries = list_socpak_entries_from_memory(&socpak_data)?;
 /// for entry in entries {
 ///     println!("{}: {} bytes", entry.name, entry.size);
 /// }
 /// # Ok::<(), unp4k::Error>(())
 /// ```
-pub fn list_sopack_entries_from_memory(data: &[u8]) -> Result<Vec<SopackEntryInfo>> {
+pub fn list_socpak_entries_from_memory(data: &[u8]) -> Result<Vec<SocpakEntryInfo>> {
     // Open the ZIP archive from memory
     let cursor = std::io::Cursor::new(data);
     let mut archive = ZipArchive::new(cursor)
@@ -217,7 +217,7 @@ pub fn list_sopack_entries_from_memory(data: &[u8]) -> Result<Vec<SopackEntryInf
             continue;
         }
 
-        entries.push(SopackEntryInfo {
+        entries.push(SocpakEntryInfo {
             name: entry_name,
             size: entry.size(),
         });
@@ -254,7 +254,7 @@ pub fn extract_single_from_memory(data: &[u8], file_name: &str) -> Result<Vec<u8
 }
 
 /// Check if a file is a `.socpak` file based on its extension
-pub fn is_sopack<P: AsRef<Path>>(path: P) -> bool {
+pub fn is_socpak<P: AsRef<Path>>(path: P) -> bool {
     path.as_ref()
         .extension()
         .and_then(|ext| ext.to_str())
@@ -271,7 +271,7 @@ pub fn is_sopack<P: AsRef<Path>>(path: P) -> bool {
 ///
 /// # Returns
 /// Total number of entries extracted from all `.socpak` files
-pub fn extract_all_sopacks<P: AsRef<Path>>(
+pub fn extract_all_socpaks<P: AsRef<Path>>(
     dir_path: P,
     recursive: bool,
     overwrite: bool,
@@ -295,15 +295,15 @@ pub fn extract_all_sopacks<P: AsRef<Path>>(
             .collect()
     };
 
-    let sopack_files: Vec<_> = entries.into_iter().filter(|path| is_sopack(path)).collect();
+    let socpak_files: Vec<_> = entries.into_iter().filter(|path| is_socpak(path)).collect();
 
-    for sopack_file in sopack_files {
-        match extract_sopack(&sopack_file, None, overwrite) {
+    for socpak_file in socpak_files {
+        match extract_socpak(&socpak_file, None, overwrite) {
             Ok(count) => {
                 total_extracted += count;
             }
             Err(e) => {
-                eprintln!("Failed to extract {:?}: {}", sopack_file, e);
+                eprintln!("Failed to extract {:?}: {}", socpak_file, e);
             }
         }
     }
@@ -316,10 +316,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_is_sopack() {
-        assert!(is_sopack("file.socpak"));
-        assert!(is_sopack("file.SOCPAK"));
-        assert!(!is_sopack("file.zip"));
-        assert!(!is_sopack("file.p4k"));
+    fn test_is_socpak() {
+        assert!(is_socpak("file.socpak"));
+        assert!(is_socpak("file.SOCPAK"));
+        assert!(!is_socpak("file.zip"));
+        assert!(!is_socpak("file.p4k"));
     }
 }

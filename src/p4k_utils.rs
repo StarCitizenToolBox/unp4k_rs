@@ -82,17 +82,17 @@ pub fn extract_files(
     extract_files_ex(p4k_path, filter, output, convert_xml, false)
 }
 
-/// Extract files from a P4K archive with sopack decoding support
+/// Extract files from a P4K archive with socpak decoding support
 pub fn extract_files_ex(
     p4k_path: &Path,
     filter: Option<&str>,
     output: &Path,
     convert_xml: bool,
-    sopack_to_dir: bool,
+    socpak_to_dir: bool,
 ) -> Result<()> {
     println!("Opening {}...", p4k_path.display());
 
-    let options = crate::P4kOpenOptions { sopack_to_dir };
+    let options = crate::P4kOpenOptions { socpak_to_dir };
 
     let mut p4k = crate::P4kFile::open_with_options(p4k_path, options)
         .with_context(|| format!("Failed to open {}", p4k_path.display()))?;

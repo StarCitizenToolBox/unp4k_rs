@@ -97,13 +97,13 @@ pub struct P4kEntry {
 #[derive(Debug, Clone)]
 pub struct P4kOpenOptions {
     /// Whether to automatically extract .socpak files as directories
-    pub sopack_to_dir: bool,
+    pub socpak_to_dir: bool,
 }
 
 impl Default for P4kOpenOptions {
     fn default() -> Self {
         Self {
-            sopack_to_dir: false,
+            socpak_to_dir: false,
         }
     }
 }
@@ -113,11 +113,11 @@ impl Default for P4kOpenOptions {
 pub enum EntrySource {
     /// Regular P4K entry
     P4k,
-    /// Virtual entry from extracted sopack (stores parent sopack name and path within sopack)
-    Sopack {
+    /// Virtual entry from extracted socpak (stores parent socpak name and path within socpak)
+    Socpak {
         /// Name of the parent .socpak file
-        parent_sopack: String,
-        /// Path within the sopack archive
+        parent_socpak: String,
+        /// Path within the socpak archive
         inner_path: String,
     },
 }
@@ -133,13 +133,7 @@ pub struct P4kFile {
     eocd_comment: Vec<u8>,
     /// Options for P4K file operations
     options: P4kOpenOptions,
-    /// Cache for small extracted sopack contents (path -> data)
-    /// Only files smaller than SOPACK_CACHE_SIZE_LIMIT are cached
-    sopack_cache: HashMap<String, Vec<u8>>,
 }
-
-/// Maximum size (in bytes) for caching sopack file contents (10MB)
-const SOPACK_CACHE_SIZE_LIMIT: usize = 10 * 1024 * 1024;
 
 impl P4kFile {
     /// Open a P4K file for reading
@@ -166,7 +160,7 @@ impl P4kFile {
     /// # Example
     /// ```no_run
     /// use unp4k::{P4kFile, P4kOpenOptions};
-    /// let options = P4kOpenOptions { sopack_to_dir: true };
+    /// let options = P4kOpenOptions { socpak_to_dir: true };
     /// let p4k = P4kFile::open_with_options("Data.p4k", options)?;
     /// # Ok::<(), unp4k::Error>(())
     /// ```
@@ -185,12 +179,11 @@ impl P4kFile {
             cd_offset,
             eocd_comment,
             options: options.clone(),
-            sopack_cache: HashMap::new(),
         };
 
-        // Process sopack files if sopack_to_dir is enabled
-        if options.sopack_to_dir {
-            p4k.process_sopack_files()?;
+        // Process socpak files if socpak_to_dir is enabled
+        if options.socpak_to_dir {
+            p4k.process_socpak_files()?;
         }
 
         Ok(p4k)
@@ -264,28 +257,21 @@ impl P4kFile {
 
     /// Extract an entry and return its contents
     pub fn extract_entry(&mut self, entry: &P4kEntry) -> Result<Vec<u8>> {
-        // Handle virtual sopack entries (lazy load)
+        // Handle virtual socpak entries (lazy load)
         match &entry.source {
-            EntrySource::Sopack {
-                parent_sopack,
+            EntrySource::Socpak {
+                parent_socpak,
                 inner_path,
             } => {
-                // Check cache first (for files < 10MB)
-                let cache_key = format!("{}/{}", parent_sopack, inner_path);
-                if let Some(cached_data) = self.sopack_cache.get(&cache_key) {
-                    return Ok(cached_data.clone());
-                }
-
-                // Not in cache, need to extract from parent sopack
-                // Get the parent sopack data
+                // Get the parent socpak data
                 let parent_entry = self
                     .entries
-                    .get(parent_sopack)
-                    .ok_or_else(|| Error::EntryNotFound(parent_sopack.clone()))?
+                    .get(parent_socpak)
+                    .ok_or_else(|| Error::EntryNotFound(parent_socpak.clone()))?
                     .clone();
 
-                // Extract parent sopack as P4K entry
-                let sopack_data = if matches!(parent_entry.source, EntrySource::P4k) {
+                // Extract parent socpak as P4K entry
+                let socpak_data = if matches!(parent_entry.source, EntrySource::P4k) {
                     // Read from P4K file
                     let data_offset = self.read_local_header_offset(&parent_entry)?;
                     self.reader.seek(SeekFrom::Start(data_offset))?;
@@ -300,17 +286,12 @@ impl P4kFile {
 
                     self.decompress(&decrypted_data, &parent_entry)?
                 } else {
-                    return Err(Error::InvalidP4k("Nested sopack not supported".to_string()));
+                    return Err(Error::InvalidP4k("Nested socpak not supported".to_string()));
                 };
 
-                // Extract single file from sopack
+                // Extract single file from socpak
                 let file_data =
-                    crate::sopack::extract_single_from_memory(&sopack_data, inner_path)?;
-
-                // Cache if smaller than limit
-                if file_data.len() < SOPACK_CACHE_SIZE_LIMIT {
-                    self.sopack_cache.insert(cache_key, file_data.clone());
-                }
+                    crate::socpak::extract_single_from_memory(&socpak_data, inner_path)?;
 
                 return Ok(file_data);
             }
@@ -378,31 +359,31 @@ impl P4kFile {
     }
 
     /// Process .socpak files and create virtual directory entries (lazy load)
-    fn process_sopack_files(&mut self) -> Result<()> {
+    fn process_socpak_files(&mut self) -> Result<()> {
         // Find all .socpak entries
-        let sopack_entries: Vec<_> = self
+        let socpak_entries: Vec<_> = self
             .entries
             .values()
-            .filter(|e| crate::sopack::is_sopack(&e.name))
+            .filter(|e| crate::socpak::is_socpak(&e.name))
             .cloned()
             .collect();
 
-        for sopack_entry in sopack_entries {
-            // Extract the sopack file data (only once at open time)
-            let sopack_data = self.extract_entry(&sopack_entry)?;
+        for socpak_entry in socpak_entries {
+            // Extract the socpak file data (only once at open time)
+            let socpak_data = self.extract_entry(&socpak_entry)?;
 
             // List entries without extracting (lazy load)
-            let sopack_file_list = crate::sopack::list_sopack_entries_from_memory(&sopack_data)?;
+            let socpak_file_list = crate::socpak::list_socpak_entries_from_memory(&socpak_data)?;
 
             // Create virtual directory entry (xxx.socpak -> xxx.unsocpak/)
-            let base_name = sopack_entry
+            let base_name = socpak_entry
                 .name
                 .strip_suffix(".socpak")
-                .unwrap_or(&sopack_entry.name);
+                .unwrap_or(&socpak_entry.name);
             let virtual_dir_name = format!("{}.unsocpak", base_name);
 
-            // Create virtual entries for each file in the sopack
-            for file_info in sopack_file_list {
+            // Create virtual entries for each file in the socpak
+            for file_info in socpak_file_list {
                 let virtual_path = format!("{}/{}", virtual_dir_name, file_info.name);
 
                 let virtual_entry = P4kEntry {
@@ -423,8 +404,8 @@ impl P4kFile {
                     external_attrs: 0,
                     content_hash: None,
                     validation_qword: None,
-                    source: EntrySource::Sopack {
-                        parent_sopack: sopack_entry.name.clone(),
+                    source: EntrySource::Socpak {
+                        parent_socpak: socpak_entry.name.clone(),
                         inner_path: file_info.name,
                     },
                 };

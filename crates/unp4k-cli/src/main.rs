@@ -76,7 +76,7 @@ enum Commands {
         convert_xml: bool,
         /// Extract .socpak files as directories
         #[arg(long)]
-        sopack_to_dir: bool,
+        socpak_to_dir: bool,
     },
     /// Show archive information
     Info {
@@ -156,8 +156,8 @@ enum Commands {
         #[arg(long)]
         info: bool,
     },
-    /// Extract .socpak (sopack) files
-    Unsopack {
+    /// Extract .socpak files
+    Unsocpak {
         /// Path to the .socpak file or directory containing .socpak files
         input: PathBuf,
         /// Output directory (default: same directory as input)
@@ -193,14 +193,14 @@ fn main() -> Result<()> {
             filter,
             output,
             convert_xml,
-            sopack_to_dir,
+            socpak_to_dir,
         }) => {
             extract_files_ex(
                 &p4k_file,
                 filter.as_deref(),
                 &output,
                 convert_xml,
-                sopack_to_dir,
+                socpak_to_dir,
             )?;
         }
         Some(Commands::Info { p4k_file }) => {
@@ -260,7 +260,7 @@ fn main() -> Result<()> {
         }) => {
             convert_dcb(&dcb_file, output.as_deref(), merge, info)?;
         }
-        Some(Commands::Unsopack {
+        Some(Commands::Unsocpak {
             input,
             output,
             overwrite,
@@ -268,11 +268,11 @@ fn main() -> Result<()> {
         }) => {
             if input.is_file() {
                 // Extract single .socpak file
-                let extracted = unp4k::sopack::extract_sopack(&input, output.as_ref(), overwrite)?;
+                let extracted = unp4k::socpak::extract_socpak(&input, output.as_ref(), overwrite)?;
                 println!("Extracted {} entries from {}", extracted, input.display());
             } else if input.is_dir() {
                 // Extract all .socpak files in directory
-                let extracted = unp4k::sopack::extract_all_sopacks(&input, recursive, overwrite)?;
+                let extracted = unp4k::socpak::extract_all_socpaks(&input, recursive, overwrite)?;
                 println!(
                     "Extracted {} total entries from .socpak files in {}",
                     extracted,
@@ -311,7 +311,7 @@ fn main() -> Result<()> {
                 eprintln!("       unp4k delete <p4k_file> <patterns...>");
                 eprintln!("       unp4k replace <p4k_file> <file> <archive_path>");
                 eprintln!("       unp4k dcb <dcb_file> [-o output] [-s]");
-                eprintln!("       unp4k unsopack <socpak_file|dir> [-o output] [-w] [-r]");
+                eprintln!("       unp4k unsocpak <socpak_file|dir> [-o output] [-w] [-r]");
                 #[cfg(feature = "mcp")]
                 eprintln!("       unp4k mcp <dcb_file> [-p port]");
                 std::process::exit(1);

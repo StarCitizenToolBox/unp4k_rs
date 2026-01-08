@@ -63,7 +63,7 @@ unp4k --help
 - 🗜️ Support for STORE, DEFLATE, and ZSTD compression
 - 📝 CryXML binary format to standard XML conversion
 - 📊 DataForge/DCB binary format to XML conversion
-- 📦 Sopack (`.socpak`) file extraction support
+- 📦 Socpak (`.socpak`) file extraction support
 - 🔍 Full-text search across DCB records
 - 💻 Cross-platform (Windows, macOS, Linux)
 
@@ -102,9 +102,9 @@ unp4k extract Data.p4k "*.xml" -o ./output
 # Extract and convert CryXML to standard XML
 unp4k extract Data.p4k "*.xml" --convert-xml
 
-# Extract with automatic sopack virtual directory mapping
-unp4k extract Data.p4k --sopack-to-dir
-# This enables transparent sopack handling:
+# Extract with automatic socpak virtual directory mapping
+unp4k extract Data.p4k --socpak-to-dir
+# This enables transparent socpak handling:
 # - .socpak files are mapped as .unsocpak/ virtual directories in memory
 # - You can access files inside .socpak archives through virtual paths
 # - Original .socpak files remain accessible
@@ -113,9 +113,9 @@ unp4k extract Data.p4k --sopack-to-dir
 #   - Data/Shaders/file.unsocpak/ (virtual directory with extracted contents)
 ```
 
-### Sopack Virtual File System
+### Socpak Virtual File System
 
-When opening a P4K with `sopack_to_dir` option enabled:
+When opening a P4K with `socpak_to_dir` option enabled:
 
 ```bash
 # .socpak files are automatically processed at open time
@@ -124,7 +124,7 @@ When opening a P4K with `sopack_to_dir` option enabled:
 
 **How it works:**
 - `.socpak` files are standard ZIP archives used by Star Citizen
-- With `sopack_to_dir: true`, `.socpak` files are transparently mapped as virtual directories:
+- With `socpak_to_dir: true`, `.socpak` files are transparently mapped as virtual directories:
   - Original: `path/to/file.socpak`
   - Virtual: `path/to/file.unsocpak/` (contains extracted files)
   - Both are accessible through the normal P4K API
@@ -132,10 +132,6 @@ When opening a P4K with `sopack_to_dir` option enabled:
   - Virtual entries are created based on ZIP file listings
   - Actual extraction happens only when you access a file
   - Reduces memory usage and improves P4K open speed
-- **Smart Caching**: Extracted files are cached intelligently
-  - Files smaller than 10MB are cached in memory after first access
-  - Larger files are extracted on every access to save memory
-  - Cache persists for the lifetime of the P4kFile instance
 - No actual file system writes occur at open time
 - When extracting to disk, virtual directory structure is preserved
 
@@ -144,31 +140,31 @@ When opening a P4K with `sopack_to_dir` option enabled:
 # Original P4K structure:
 #   Data/Shaders/effects.socpak
 
-# With --sopack-to-dir:
+# With --socpak-to-dir:
 #   Data/Shaders/effects.socpak (original file)
 #   Data/Shaders/effects.unsocpak/shader1.dxbc (virtual, extracted on first access)
 #   Data/Shaders/effects.unsocpak/shader2.dxbc (virtual, extracted on first access)
 ```
 
-### Extract Sopack Files Independently
+### Extract Socpak Files Independently
 
 You can extract `.socpak` files directly without opening a P4K:
 
 ```bash
 # Extract a single .socpak file
-unp4k unsopack file.socpak
+unp4k unsocpak file.socpak
 
 # Extract to a specific directory
-unp4k unsopack file.socpak -o ./output
+unp4k unsocpak file.socpak -o ./output
 
 # Extract all .socpak files in a directory
-unp4k unsopack ./directory
+unp4k unsocpak ./directory
 
 # Recursively search and extract all .socpak files
-unp4k unsopack ./directory -r
+unp4k unsocpak ./directory -r
 
 # Overwrite existing files
-unp4k unsopack file.socpak -w
+unp4k unsocpak file.socpak -w
 ```
 
 ### Show Archive Info
@@ -309,15 +305,15 @@ fn main() -> anyhow::Result<()> {
 }
 ```
 
-### Using Sopack Virtual File System
+### Using Socpak Virtual File System
 
 ```rust
 use unp4k::{P4kFile, P4kOpenOptions, EntrySource};
 
 fn main() -> anyhow::Result<()> {
-    // Open P4K with sopack virtual directory mapping enabled
+    // Open P4K with socpak virtual directory mapping enabled
     let options = P4kOpenOptions {
-        sopack_to_dir: true,
+        socpak_to_dir: true,
     };
     let mut p4k = P4kFile::open_with_options("Data.p4k", options)?;
     
@@ -327,8 +323,8 @@ fn main() -> anyhow::Result<()> {
             EntrySource::P4k => {
                 println!("P4K: {}", entry.name);
             }
-            EntrySource::Sopack { parent_sopack, inner_path } => {
-                println!("Virtual: {} (from {})", entry.name, parent_sopack);
+            EntrySource::Socpak { parent_socpak, inner_path } => {
+                println!("Virtual: {} (from {})", entry.name, parent_socpak);
             }
         }
     }

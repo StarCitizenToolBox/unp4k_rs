@@ -82,7 +82,7 @@ pub mod error;
 pub mod p4k;
 pub mod p4k_utils;
 pub mod p4k_writer;
-pub mod sopack;
+pub mod socpak;
 pub mod utils;
 
 pub use cryxml::CryXmlReader;
