@@ -82,11 +82,12 @@ pub mod error;
 pub mod p4k;
 pub mod p4k_utils;
 pub mod p4k_writer;
+pub mod sopack;
 pub mod utils;
 
 pub use cryxml::CryXmlReader;
 pub use dataforge::DataForge;
 pub use error::{Error, Result};
-pub use p4k::{CompressionMethod, P4kEntry, P4kFile};
+pub use p4k::{CompressionMethod, EntrySource, P4kEntry, P4kFile, P4kOpenOptions};
 pub use p4k_writer::{P4kModifier, P4kWriteEntry, P4kWriteOptions, P4kWriter};
 pub use utils::{collect_files, create_glob_matcher, format_size, matches_filter};

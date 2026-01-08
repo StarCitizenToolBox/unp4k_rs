@@ -15,8 +15,8 @@ use std::path::{Path, PathBuf};
 
 use unp4k::dataforge::utils::convert_dcb;
 use unp4k::p4k_utils::{
-    add_file, delete_files, extract_files, list_files, pack_directory, patch_p4k, replace_file,
-    show_info,
+    add_file, delete_files, extract_files, extract_files_ex, list_files, pack_directory, patch_p4k,
+    replace_file, show_info,
 };
 use unp4k::CompressionMethod;
 
@@ -74,6 +74,9 @@ enum Commands {
         /// Convert CryXML files to XML
         #[arg(short, long)]
         convert_xml: bool,
+        /// Extract .socpak files as directories
+        #[arg(long)]
+        sopack_to_dir: bool,
     },
     /// Show archive information
     Info {
@@ -153,6 +156,20 @@ enum Commands {
         #[arg(long)]
         info: bool,
     },
+    /// Extract .socpak (sopack) files
+    Unsopack {
+        /// Path to the .socpak file or directory containing .socpak files
+        input: PathBuf,
+        /// Output directory (default: same directory as input)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Overwrite existing files
+        #[arg(short = 'w', long)]
+        overwrite: bool,
+        /// Recursively search for .socpak files in directory
+        #[arg(short, long)]
+        recursive: bool,
+    },
     /// Start MCP (Model Context Protocol) server for DataForge/DCB data
     #[cfg(feature = "mcp")]
     Mcp {
@@ -176,8 +193,15 @@ fn main() -> Result<()> {
             filter,
             output,
             convert_xml,
+            sopack_to_dir,
         }) => {
-            extract_files(&p4k_file, filter.as_deref(), &output, convert_xml)?;
+            extract_files_ex(
+                &p4k_file,
+                filter.as_deref(),
+                &output,
+                convert_xml,
+                sopack_to_dir,
+            )?;
         }
         Some(Commands::Info { p4k_file }) => {
             show_info(&p4k_file)?;
@@ -236,6 +260,32 @@ fn main() -> Result<()> {
         }) => {
             convert_dcb(&dcb_file, output.as_deref(), merge, info)?;
         }
+        Some(Commands::Unsopack {
+            input,
+            output,
+            overwrite,
+            recursive,
+        }) => {
+            if input.is_file() {
+                // Extract single .socpak file
+                let extracted = unp4k::sopack::extract_sopack(&input, output.as_ref(), overwrite)?;
+                println!("Extracted {} entries from {}", extracted, input.display());
+            } else if input.is_dir() {
+                // Extract all .socpak files in directory
+                let extracted = unp4k::sopack::extract_all_sopacks(&input, recursive, overwrite)?;
+                println!(
+                    "Extracted {} total entries from .socpak files in {}",
+                    extracted,
+                    input.display()
+                );
+            } else {
+                eprintln!(
+                    "Error: {} is not a valid file or directory",
+                    input.display()
+                );
+                std::process::exit(1);
+            }
+        }
         #[cfg(feature = "mcp")]
         Some(Commands::Mcp { dcb_file, port }) => {
             let rt = tokio::runtime::Runtime::new()?;
@@ -261,6 +311,7 @@ fn main() -> Result<()> {
                 eprintln!("       unp4k delete <p4k_file> <patterns...>");
                 eprintln!("       unp4k replace <p4k_file> <file> <archive_path>");
                 eprintln!("       unp4k dcb <dcb_file> [-o output] [-s]");
+                eprintln!("       unp4k unsopack <socpak_file|dir> [-o output] [-w] [-r]");
                 #[cfg(feature = "mcp")]
                 eprintln!("       unp4k mcp <dcb_file> [-p port]");
                 std::process::exit(1);
