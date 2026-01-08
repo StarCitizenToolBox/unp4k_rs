@@ -30,7 +30,11 @@ unp4k_rs/
 
 ## Installation
 
-### From Git (Recommended)
+### From Pre-built Binaries
+
+Download the latest release from [GitHub releases](https://github.com/StarCitizenToolBox/unp4k_rs/releases).
+
+### From Git
 
 ```bash
 # Install CLI tool
