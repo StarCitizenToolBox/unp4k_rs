@@ -122,7 +122,7 @@ jobs:
         shell: pwsh
         run: |
           cd target/${{ matrix.target }}/release
-          Compress-Archive -Path ${{ matrix.artifact_name }} -DestinationPath ${{ matrix.asset_name }}.zip
+          Compress-Archive -Path ${{ matrix.artifact_name }} -DestinationPath ${{ matrix.asset_name }}.zip -Force
           (Get-FileHash -Algorithm SHA256 ${{ matrix.asset_name }}.zip).Hash | Out-File -FilePath ${{ matrix.asset_name }}.zip.sha256 -Encoding ASCII
 
       - name: Upload release assets (Linux/macOS)
