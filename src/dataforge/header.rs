@@ -1,8 +1,8 @@
 //! DataForge file header parsing
 
+use crate::error::{Error, Result};
 use byteorder::{LittleEndian, ReadBytesExt};
 use std::io::{Cursor, Seek, SeekFrom};
-use crate::error::{Error, Result};
 
 /// DataForge file header containing counts and metadata
 #[derive(Debug, Clone)]
@@ -144,6 +144,10 @@ impl DataForgeHeader {
 
     /// Get the header size based on legacy status
     pub fn header_size(&self) -> u64 {
-        if self.is_legacy { 0x74 } else { 0x78 }
+        if self.is_legacy {
+            0x74
+        } else {
+            0x78
+        }
     }
 }

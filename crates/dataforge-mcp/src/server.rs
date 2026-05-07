@@ -5,11 +5,8 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use regex::Regex;
 use rmcp::{
-    handler::server::tool::ToolRouter,
-    handler::server::wrapper::Parameters,
-    model::*,
-    tool, tool_router,
-    ErrorData as McpError, ServerHandler,
+    handler::server::tool::ToolRouter, handler::server::wrapper::Parameters, model::*, tool,
+    tool_router, ErrorData as McpError, ServerHandler,
 };
 use tokio::sync::RwLock;
 use tracing::info;
@@ -153,14 +150,12 @@ impl DataForgeServer {
         let df = self.dataforge.read().await;
 
         // Always format XML for consistent line indexing
-        let xml = df
-            .record_to_xml(&request.path, true)
-            .map_err(|e| {
-                McpError::invalid_params(
-                    format!("Failed to get record '{}': {}", request.path, e),
-                    None,
-                )
-            })?;
+        let xml = df.record_to_xml(&request.path, true).map_err(|e| {
+            McpError::invalid_params(
+                format!("Failed to get record '{}': {}", request.path, e),
+                None,
+            )
+        })?;
 
         let lines: Vec<&str> = xml.lines().collect();
         let total_lines = lines.len();
@@ -172,14 +167,20 @@ impl DataForgeServer {
         // Validate range
         if start_line > end_line {
             return Err(McpError::invalid_params(
-                format!("start_line ({}) cannot be greater than end_line ({})", start_line, end_line),
+                format!(
+                    "start_line ({}) cannot be greater than end_line ({})",
+                    start_line, end_line
+                ),
                 None,
             ));
         }
 
         if start_line > total_lines {
             return Err(McpError::invalid_params(
-                format!("start_line ({}) exceeds total lines ({})", start_line, total_lines),
+                format!(
+                    "start_line ({}) exceeds total lines ({})",
+                    start_line, total_lines
+                ),
                 None,
             ));
         }
@@ -358,7 +359,11 @@ impl DataForgeServer {
             Vec::new()
         } else {
             let start = (page - 1) * page_size;
-            all_results.into_iter().skip(start).take(page_size).collect()
+            all_results
+                .into_iter()
+                .skip(start)
+                .take(page_size)
+                .collect()
         };
 
         let response = SearchResponse {
@@ -459,7 +464,11 @@ impl DataForgeServer {
             Vec::new()
         } else {
             let start = (page - 1) * page_size;
-            all_results.into_iter().skip(start).take(page_size).collect()
+            all_results
+                .into_iter()
+                .skip(start)
+                .take(page_size)
+                .collect()
         };
 
         let response = SearchResponse {
@@ -614,7 +623,6 @@ pub async fn start_mcp_server(dcb_path: &str, port: u16) -> Result<()> {
     use std::net::SocketAddr;
     use tokio::net::TcpListener;
 
-
     // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -660,7 +668,7 @@ pub async fn start_mcp_server(dcb_path: &str, port: u16) -> Result<()> {
                 .timer(TokioTimer::new())
                 .keep_alive(true)
                 .serve_connection(io, hyper_service)
-                .await 
+                .await
             {
                 let err_debug = format!("{:?}", err);
                 tracing::error!("Error serving connection: {:?}", err_debug);
@@ -734,11 +742,12 @@ pub async fn start_mcp_server_with_bytes(data: &[u8], port: u16, init_tracing: b
                 .timer(TokioTimer::new())
                 .keep_alive(true)
                 .serve_connection(io, hyper_service)
-                .await 
+                .await
             {
                 // Ignore IncompleteMessage and HeaderTimeout errors which are common in SSE/Keep-Alive
                 let err_debug = format!("{:?}", err);
-                if !err_debug.contains("IncompleteMessage") && !err_debug.contains("HeaderTimeout") {
+                if !err_debug.contains("IncompleteMessage") && !err_debug.contains("HeaderTimeout")
+                {
                     tracing::error!("Error serving connection: {:?}", err);
                 }
             }

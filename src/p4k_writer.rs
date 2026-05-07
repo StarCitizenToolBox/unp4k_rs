@@ -7,7 +7,7 @@
 //! The Star Citizen launcher uses a specific validation scheme for P4K files:
 //!
 //! ### Extra Field Structure (in Central Directory entries)
-//! 
+//!
 //! The extra field in P4K entries has the following layout (206 bytes total):
 //! - **Offset 0-n**: ZIP64 extended information (if file sizes exceed 4GB)
 //! - **Offset 4 (8 bytes)**: Additional data (v110 in IDA)
@@ -31,7 +31,7 @@
 //! ### Launcher Validation Flow (from IDA `sub_18006E420` in cig_hash.c)
 //!
 //! 1. Load remote manifest (file list with expected hashes)
-//! 2. Open local Data.p4k and read TOC (Table of Contents) 
+//! 2. Open local Data.p4k and read TOC (Table of Contents)
 //! 3. For each entry in manifest:
 //!    - Find corresponding entry in TOC
 //!    - Compare: compressed_size, CRC32, and 32-byte SHA256 hash
@@ -47,14 +47,14 @@
 //! - Setting 16-byte table count to 0 in EOCD comment disables that check
 //! - CRC32 and compressed sizes must match actual file data
 
+use crate::crypto::encrypt_aes_cbc;
+use crate::error::{Error, Result};
+use crate::p4k::{CompressionMethod, P4kFile};
+use byteorder::{LittleEndian, WriteBytesExt};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::Path;
-use std::collections::HashMap;
-use byteorder::{LittleEndian, WriteBytesExt};
-use crate::crypto::encrypt_aes_cbc;
-use crate::error::{Error, Result};
-use crate::p4k::{P4kFile, CompressionMethod};
 
 /// Options for creating/modifying P4K files
 #[derive(Debug, Clone)]
@@ -186,13 +186,13 @@ impl P4kWriter {
         // Calculate CRC32 of uncompressed data
         let crc32 = crc32fast::hash(&entry.data);
         let uncompressed_size = entry.data.len() as u64;
-        
+
         // Calculate SHA256 hash of uncompressed data for launcher validation
         let content_hash = crate::crypto::calculate_sha256(&entry.data);
 
         // Compress data
         let compressed_data = self.compress(&entry.data, compression)?;
-        
+
         // Encrypt if needed
         let final_data = if encrypt {
             encrypt_aes_cbc(&compressed_data)?
@@ -254,7 +254,7 @@ impl P4kWriter {
     pub fn finish(mut self) -> Result<()> {
         // Write central directory
         let cd_offset = self.writer.stream_position()?;
-        
+
         // Clone entries to avoid borrow conflict
         let entries: Vec<_> = self.entries.to_vec();
         for entry in &entries {
@@ -264,9 +264,8 @@ impl P4kWriter {
         let cd_size = self.writer.stream_position()? - cd_offset;
 
         // Check if ZIP64 is needed
-        let use_zip64 = cd_offset > 0xFFFFFFFF 
-            || cd_size > 0xFFFFFFFF 
-            || self.entries.len() > 0xFFFF;
+        let use_zip64 =
+            cd_offset > 0xFFFFFFFF || cd_size > 0xFFFFFFFF || self.entries.len() > 0xFFFF;
 
         if use_zip64 {
             self.write_zip64_end(cd_offset, cd_size)?;
@@ -282,31 +281,26 @@ impl P4kWriter {
     fn compress(&self, data: &[u8], method: CompressionMethod) -> Result<Vec<u8>> {
         match method {
             CompressionMethod::Store => Ok(data.to_vec()),
-            
+
             CompressionMethod::Deflate => {
                 use flate2::write::DeflateEncoder;
                 use flate2::Compression;
-                
-                let mut encoder = DeflateEncoder::new(
-                    Vec::new(),
-                    Compression::new(self.options.deflate_level),
-                );
+
+                let mut encoder =
+                    DeflateEncoder::new(Vec::new(), Compression::new(self.options.deflate_level));
                 encoder.write_all(data)?;
-                encoder.finish()
+                encoder
+                    .finish()
                     .map_err(|e| Error::Decompression(format!("Deflate compression failed: {}", e)))
             }
-            
+
             CompressionMethod::Zstd => {
-                let compressed = zstd::encode_all(
-                    data,
-                    self.options.zstd_level,
-                ).map_err(|e| Error::Decompression(format!("ZSTD compression failed: {}", e)))?;
+                let compressed = zstd::encode_all(data, self.options.zstd_level)
+                    .map_err(|e| Error::Decompression(format!("ZSTD compression failed: {}", e)))?;
                 Ok(compressed)
             }
-            
-            CompressionMethod::Unknown(m) => {
-                Err(Error::UnsupportedCompression(m))
-            }
+
+            CompressionMethod::Unknown(m) => Err(Error::UnsupportedCompression(m)),
         }
     }
 
@@ -327,28 +321,28 @@ impl P4kWriter {
         // Based on IDA analysis (p4k_extracted.c LoadPakFile_v1):
         // - Offset 4: 8 bytes (v110)
         // - Offset 12-20: 8 bytes Validation QWORD (v109) - used in 12-byte table
-        // - Offset 20: 8 bytes (v111)  
+        // - Offset 20: 8 bytes (v111)
         // - Offset 168: 2 bytes encryption marker (v117, > 0 for encrypted)
         // - Offset 174 (0xAE): 32 bytes SHA256 hash of uncompressed content
         let mut extra = vec![0u8; 206];
-        
+
         // ZIP64 extra field at start if needed
         let mut offset = 0;
         if needs_zip64 {
-            extra[offset..offset+2].copy_from_slice(&0x0001u16.to_le_bytes()); // ZIP64 header ID
+            extra[offset..offset + 2].copy_from_slice(&0x0001u16.to_le_bytes()); // ZIP64 header ID
             offset += 2;
-            extra[offset..offset+2].copy_from_slice(&16u16.to_le_bytes()); // Data size
+            extra[offset..offset + 2].copy_from_slice(&16u16.to_le_bytes()); // Data size
             offset += 2;
-            extra[offset..offset+8].copy_from_slice(&uncompressed_size.to_le_bytes());
+            extra[offset..offset + 8].copy_from_slice(&uncompressed_size.to_le_bytes());
             offset += 8;
-            extra[offset..offset+8].copy_from_slice(&compressed_size.to_le_bytes());
+            extra[offset..offset + 8].copy_from_slice(&compressed_size.to_le_bytes());
         }
-        
+
         // Write SHA256 hash at offset 174 (0xAE) - 32 bytes for launcher validation
         if let Some(hash) = content_hash {
             extra[174..206].copy_from_slice(hash);
         }
-        
+
         // P4K encryption marker at offset 168
         if is_encrypted {
             extra[168] = 0x01;
@@ -361,47 +355,51 @@ impl P4kWriter {
         } else {
             self.writer.write_all(&[0x50, 0x4B, 0x03, 0x04])?;
         }
-        
+
         // Version needed (4.5 for ZIP64, 2.0 otherwise)
         let version = if needs_zip64 { 45u16 } else { 20u16 };
         self.writer.write_u16::<LittleEndian>(version)?;
-        
+
         // General purpose bit flag
         let mut flags = 0u16;
         if is_encrypted {
             flags |= 0x0001; // Encrypted
         }
         self.writer.write_u16::<LittleEndian>(flags)?;
-        
+
         // Compression method
-        self.writer.write_u16::<LittleEndian>(compression.to_u16())?;
-        
+        self.writer
+            .write_u16::<LittleEndian>(compression.to_u16())?;
+
         // Modification time/date (use current time)
         let (time, date) = dos_datetime_now();
         self.writer.write_u16::<LittleEndian>(time)?;
         self.writer.write_u16::<LittleEndian>(date)?;
-        
+
         // CRC-32
         self.writer.write_u32::<LittleEndian>(crc32)?;
-        
+
         // Compressed/uncompressed size (use 0xFFFFFFFF if ZIP64)
         if needs_zip64 {
             self.writer.write_u32::<LittleEndian>(0xFFFFFFFF)?;
             self.writer.write_u32::<LittleEndian>(0xFFFFFFFF)?;
         } else {
-            self.writer.write_u32::<LittleEndian>(compressed_size as u32)?;
-            self.writer.write_u32::<LittleEndian>(uncompressed_size as u32)?;
+            self.writer
+                .write_u32::<LittleEndian>(compressed_size as u32)?;
+            self.writer
+                .write_u32::<LittleEndian>(uncompressed_size as u32)?;
         }
-        
+
         // File name length
-        self.writer.write_u16::<LittleEndian>(name_bytes.len() as u16)?;
-        
+        self.writer
+            .write_u16::<LittleEndian>(name_bytes.len() as u16)?;
+
         // Extra field length
         self.writer.write_u16::<LittleEndian>(extra.len() as u16)?;
-        
+
         // File name
         self.writer.write_all(name_bytes)?;
-        
+
         // Extra field
         self.writer.write_all(&extra)?;
 
@@ -410,7 +408,7 @@ impl P4kWriter {
 
     fn write_central_directory_entry(&mut self, entry: &WrittenEntry) -> Result<()> {
         let name_bytes = entry.name.as_bytes();
-        let needs_zip64 = entry.compressed_size > 0xFFFFFFFF 
+        let needs_zip64 = entry.compressed_size > 0xFFFFFFFF
             || entry.uncompressed_size > 0xFFFFFFFF
             || entry.header_offset > 0xFFFFFFFF;
 
@@ -423,36 +421,36 @@ impl P4kWriter {
         // - Offset 168: 2 bytes encryption marker
         // - Offset 174 (0xAE): 32 bytes SHA256 hash
         let mut extra = vec![0u8; 206];
-        
+
         // ZIP64 extra field at start if needed
         if needs_zip64 {
             extra[0..2].copy_from_slice(&0x0001u16.to_le_bytes()); // ZIP64 header ID
             let mut offset = 4; // Skip header ID and size, fill size later
             let mut data_size = 0u16;
-            
+
             if entry.uncompressed_size > 0xFFFFFFFF {
-                extra[offset..offset+8].copy_from_slice(&entry.uncompressed_size.to_le_bytes());
+                extra[offset..offset + 8].copy_from_slice(&entry.uncompressed_size.to_le_bytes());
                 offset += 8;
                 data_size += 8;
             }
             if entry.compressed_size > 0xFFFFFFFF {
-                extra[offset..offset+8].copy_from_slice(&entry.compressed_size.to_le_bytes());
+                extra[offset..offset + 8].copy_from_slice(&entry.compressed_size.to_le_bytes());
                 offset += 8;
                 data_size += 8;
             }
             if entry.header_offset > 0xFFFFFFFF {
-                extra[offset..offset+8].copy_from_slice(&entry.header_offset.to_le_bytes());
+                extra[offset..offset + 8].copy_from_slice(&entry.header_offset.to_le_bytes());
                 data_size += 8;
             }
-            
+
             extra[2..4].copy_from_slice(&data_size.to_le_bytes());
         }
-        
+
         // Write SHA256 hash at offset 174 (0xAE) - 32 bytes for launcher validation
         if let Some(hash) = &entry.content_hash {
             extra[174..206].copy_from_slice(hash);
         }
-        
+
         // P4K encryption marker at offset 168
         if entry.is_encrypted {
             extra[168] = 0x01;
@@ -460,72 +458,77 @@ impl P4kWriter {
 
         // Central directory signature
         self.writer.write_all(&[0x50, 0x4B, 0x01, 0x02])?;
-        
+
         // Version made by (Unix, 4.5)
         self.writer.write_u16::<LittleEndian>(0x0300 | 45)?;
-        
+
         // Version needed
         let version = if needs_zip64 { 45u16 } else { 20u16 };
         self.writer.write_u16::<LittleEndian>(version)?;
-        
+
         // General purpose bit flag
         let mut flags = 0u16;
         if entry.is_encrypted {
             flags |= 0x0001;
         }
         self.writer.write_u16::<LittleEndian>(flags)?;
-        
+
         // Compression method
-        self.writer.write_u16::<LittleEndian>(entry.compression_method)?;
-        
+        self.writer
+            .write_u16::<LittleEndian>(entry.compression_method)?;
+
         // Modification time/date
         let (time, date) = dos_datetime_now();
         self.writer.write_u16::<LittleEndian>(time)?;
         self.writer.write_u16::<LittleEndian>(date)?;
-        
+
         // CRC-32
         self.writer.write_u32::<LittleEndian>(entry.crc32)?;
-        
+
         // Sizes
         if entry.compressed_size > 0xFFFFFFFF {
             self.writer.write_u32::<LittleEndian>(0xFFFFFFFF)?;
         } else {
-            self.writer.write_u32::<LittleEndian>(entry.compressed_size as u32)?;
+            self.writer
+                .write_u32::<LittleEndian>(entry.compressed_size as u32)?;
         }
         if entry.uncompressed_size > 0xFFFFFFFF {
             self.writer.write_u32::<LittleEndian>(0xFFFFFFFF)?;
         } else {
-            self.writer.write_u32::<LittleEndian>(entry.uncompressed_size as u32)?;
+            self.writer
+                .write_u32::<LittleEndian>(entry.uncompressed_size as u32)?;
         }
-        
+
         // File name length
-        self.writer.write_u16::<LittleEndian>(name_bytes.len() as u16)?;
-        
+        self.writer
+            .write_u16::<LittleEndian>(name_bytes.len() as u16)?;
+
         // Extra field length
         self.writer.write_u16::<LittleEndian>(extra.len() as u16)?;
-        
+
         // Comment length
         self.writer.write_u16::<LittleEndian>(0)?;
-        
+
         // Disk number start
         self.writer.write_u16::<LittleEndian>(0)?;
-        
+
         // Internal file attributes
         self.writer.write_u16::<LittleEndian>(0)?;
-        
+
         // External file attributes
         self.writer.write_u32::<LittleEndian>(0)?;
-        
+
         // Relative offset of local header
         if entry.header_offset > 0xFFFFFFFF {
             self.writer.write_u32::<LittleEndian>(0xFFFFFFFF)?;
         } else {
-            self.writer.write_u32::<LittleEndian>(entry.header_offset as u32)?;
+            self.writer
+                .write_u32::<LittleEndian>(entry.header_offset as u32)?;
         }
-        
+
         // File name
         self.writer.write_all(name_bytes)?;
-        
+
         // Extra field
         self.writer.write_all(&extra)?;
 
@@ -538,74 +541,81 @@ impl P4kWriter {
         // CIG P4K uses an EXTENDED ZIP64 EOCD format with additional fields:
         // - Offset 104-105: sector_size (2 bytes)
         // - Offset 106-113: 16-byte table entry count (8 bytes)
-        // 
+        //
         // Total size = 114 bytes (including signature), so size field = 114 - 12 = 102
-        
+
         // ZIP64 End of Central Directory Record
         self.writer.write_all(&[0x50, 0x4B, 0x06, 0x06])?;
-        
+
         // Size of ZIP64 EOCD record (CIG extended: 102)
         self.writer.write_u64::<LittleEndian>(102)?;
-        
+
         // Version made by
         self.writer.write_u16::<LittleEndian>(45)?;
-        
+
         // Version needed
         self.writer.write_u16::<LittleEndian>(45)?;
-        
+
         // Disk number
         self.writer.write_u32::<LittleEndian>(0)?;
-        
+
         // Disk with CD
         self.writer.write_u32::<LittleEndian>(0)?;
-        
+
         // Entries on this disk
-        self.writer.write_u64::<LittleEndian>(self.entries.len() as u64)?;
-        
+        self.writer
+            .write_u64::<LittleEndian>(self.entries.len() as u64)?;
+
         // Total entries
-        self.writer.write_u64::<LittleEndian>(self.entries.len() as u64)?;
-        
+        self.writer
+            .write_u64::<LittleEndian>(self.entries.len() as u64)?;
+
         // CD size
         self.writer.write_u64::<LittleEndian>(cd_size)?;
-        
+
         // CD offset
         self.writer.write_u64::<LittleEndian>(cd_offset)?;
-        
+
         // CIG extended fields (offset 56-113)
         // Padding from offset 56 to 104 = 48 bytes
         self.writer.write_all(&[0u8; 48])?;
-        
+
         // Offset 104: sector_size (default 4096 for new archives)
         self.writer.write_u16::<LittleEndian>(4096)?;
-        
+
         // Offset 106: 16-byte table entry count (0 to disable validation)
         self.writer.write_u64::<LittleEndian>(0)?;
 
         // ZIP64 End of Central Directory Locator
         self.writer.write_all(&[0x50, 0x4B, 0x06, 0x07])?;
-        
+
         // Disk with ZIP64 EOCD
         self.writer.write_u32::<LittleEndian>(0)?;
-        
+
         // Offset of ZIP64 EOCD
         self.writer.write_u64::<LittleEndian>(zip64_eocd_offset)?;
-        
+
         // Total disks
         self.writer.write_u32::<LittleEndian>(1)?;
 
         Ok(())
     }
 
-    fn write_end_of_central_directory(&mut self, cd_offset: u64, cd_size: u64, use_zip64: bool) -> Result<()> {
+    fn write_end_of_central_directory(
+        &mut self,
+        cd_offset: u64,
+        cd_size: u64,
+        use_zip64: bool,
+    ) -> Result<()> {
         // End of Central Directory signature
         self.writer.write_all(&[0x50, 0x4B, 0x05, 0x06])?;
-        
+
         // Disk number
         self.writer.write_u16::<LittleEndian>(0)?;
-        
+
         // Disk with CD
         self.writer.write_u16::<LittleEndian>(0)?;
-        
+
         // Entries on this disk
         let entries_count = if use_zip64 || self.entries.len() > 0xFFFF {
             0xFFFF
@@ -613,26 +623,27 @@ impl P4kWriter {
             self.entries.len() as u16
         };
         self.writer.write_u16::<LittleEndian>(entries_count)?;
-        
+
         // Total entries
         self.writer.write_u16::<LittleEndian>(entries_count)?;
-        
+
         // CD size
         if use_zip64 || cd_size > 0xFFFFFFFF {
             self.writer.write_u32::<LittleEndian>(0xFFFFFFFF)?;
         } else {
             self.writer.write_u32::<LittleEndian>(cd_size as u32)?;
         }
-        
+
         // CD offset
         if use_zip64 || cd_offset > 0xFFFFFFFF {
             self.writer.write_u32::<LittleEndian>(0xFFFFFFFF)?;
         } else {
             self.writer.write_u32::<LittleEndian>(cd_offset as u32)?;
         }
-        
+
         // Comment (Star Citizen uses this for "CIG" validation)
-        self.writer.write_u16::<LittleEndian>(self.eocd_comment.len() as u16)?;
+        self.writer
+            .write_u16::<LittleEndian>(self.eocd_comment.len() as u16)?;
         if !self.eocd_comment.is_empty() {
             self.writer.write_all(&self.eocd_comment)?;
         }
@@ -644,23 +655,23 @@ impl P4kWriter {
 /// Get current time as DOS datetime
 fn dos_datetime_now() -> (u16, u16) {
     use std::time::{SystemTime, UNIX_EPOCH};
-    
+
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    
+
     // Convert to DOS format (simplified)
     let time = ((now / 2) % 30) as u16 // seconds/2
         | (((now / 60) % 60) << 5) as u16 // minutes
         | (((now / 3600) % 24) << 11) as u16; // hours
-    
+
     let days = (now / 86400) as u16;
     let year = 1970 + days / 365;
     let date = 1 // day
         | (1 << 5) // month
         | (((year.saturating_sub(1980)) & 0x7F) << 9); // year since 1980
-    
+
     (time, date)
 }
 
@@ -693,14 +704,14 @@ pub struct P4kModifier {
 }
 
 /// Parse the Star Citizen P4K validation tables info from EOCD comment
-/// 
+///
 /// EOCD comment structure (16 bytes):
 /// - Bytes 0-2: "CIG" signature
 /// - Byte 3: 0x00
 /// - Bytes 4-5: version (u16 LE)
-/// - Bytes 6-7: sector size (u16 LE) 
+/// - Bytes 6-7: sector size (u16 LE)
 /// - Bytes 8-15: 16-byte table count (u64 LE)
-/// 
+///
 /// Returns: (sector_size, table16_count)
 fn parse_cig_comment(comment: &[u8]) -> Option<(u16, u64)> {
     if comment.len() < 16 {
@@ -712,21 +723,27 @@ fn parse_cig_comment(comment: &[u8]) -> Option<(u16, u64)> {
     }
     let sector_size = u16::from_le_bytes([comment[6], comment[7]]);
     let table16_count = u64::from_le_bytes([
-        comment[8], comment[9], comment[10], comment[11],
-        comment[12], comment[13], comment[14], comment[15],
+        comment[8],
+        comment[9],
+        comment[10],
+        comment[11],
+        comment[12],
+        comment[13],
+        comment[14],
+        comment[15],
     ]);
     Some((sector_size, table16_count))
 }
 
 /// Align a size to sector boundary
-/// 
+///
 /// Uses the same formula as CIG launcher: `~(align - 1) & (size + align - 1)`
 /// This rounds up to the nearest multiple of `align`.
-/// 
+///
 /// # Arguments
 /// * `size` - The size to align
 /// * `align` - The alignment (must be power of 2, typically sector size like 4096)
-/// 
+///
 /// # Returns
 /// The aligned size (>= original size)
 #[inline]
@@ -741,11 +758,11 @@ fn align_to_sector(size: u64, align: u64) -> u64 {
 }
 
 /// Pad a writer to sector boundary with zeros
-/// 
+///
 /// # Arguments
 /// * `writer` - The writer to pad
 /// * `align` - The sector alignment
-/// 
+///
 /// # Returns
 /// The number of padding bytes written
 fn pad_to_sector<W: Write + Seek>(writer: &mut W, align: u64) -> Result<u64> {
@@ -811,14 +828,14 @@ impl P4kModifier {
     /// Write the modified archive to a new file (full rewrite)
     pub fn save<P: AsRef<Path>>(mut self, output: P) -> Result<()> {
         let mut writer = P4kWriter::create_with_options(output, self.options.clone())?;
-        
+
         // Use modified EOCD comment with validation tables disabled
         let modified_comment = create_disabled_validation_comment(&self.eocd_comment);
         writer.set_eocd_comment(modified_comment);
 
         // Copy existing entries (except deleted/modified ones)
         let entries: Vec<_> = self.source.entries().into_iter().cloned().collect();
-        
+
         for entry in entries {
             // Skip deleted entries
             if self.deletions.contains(&entry.name) {
@@ -849,52 +866,55 @@ impl P4kModifier {
     }
 
     /// Incrementally modify the archive in-place
-    /// 
+    ///
     /// This is much faster than full rewrite for delete-only operations,
     /// as it only rewrites the central directory.
-    /// 
+    ///
     /// For add/replace operations, new data is appended before the central directory.
-    /// 
+    ///
     /// Note: Star Citizen P4K files have validation tables before CD. We regenerate
     /// the 12-byte table from CD entries and skip the 16-byte table.
     pub fn save_incremental(self) -> Result<()> {
         use std::fs::OpenOptions;
         use std::io::{BufWriter, Write};
-        
+
         // Get central directory info from source
         let cd_offset = self.source.central_directory_offset();
         let entry_count = self.source.len() as u64;
-        
+
         // Calculate the offset where to start writing
         // P4K layout: [file data...][12-byte table][16-byte table][CD][ZIP64 EOCD][ZIP64 Locator][EOCD]
         // We skip both tables and regenerate the 12-byte table from CD entries
         // The 16-byte table count is stored in EOCD comment bytes 8-15 (we set it to 0 to disable)
-        let (sector_size, write_offset) = if let Some((sector_size, table16_count)) = parse_cig_comment(&self.eocd_comment) {
-            // Calculate: skip both tables
-            let table12_size = 12 * entry_count;
-            let table16_size = 16 * table16_count;
-            let offset = cd_offset.saturating_sub(table12_size).saturating_sub(table16_size);
-            (sector_size, offset)
-        } else {
-            // No CIG comment, use CD offset directly
-            (0, cd_offset)
-        };
-        
+        let (sector_size, write_offset) =
+            if let Some((sector_size, table16_count)) = parse_cig_comment(&self.eocd_comment) {
+                // Calculate: skip both tables
+                let table12_size = 12 * entry_count;
+                let table16_size = 16 * table16_count;
+                let offset = cd_offset
+                    .saturating_sub(table12_size)
+                    .saturating_sub(table16_size);
+                (sector_size, offset)
+            } else {
+                // No CIG comment, use CD offset directly
+                (0, cd_offset)
+            };
+
         // Collect entries to keep (in original order for validation table consistency)
         let entries: Vec<_> = self.source.entries_ordered().into_iter().cloned().collect();
         let mut kept_entries: Vec<WrittenEntry> = Vec::new();
-        
+
         for entry in &entries {
             // Skip deleted entries
             if self.deletions.contains(&entry.name) {
                 continue;
             }
-            
+
             // Skip entries that will be replaced (we'll add them later)
             if self.modifications.contains_key(&entry.name) {
                 continue;
             }
-            
+
             // Keep this entry's metadata with original extra data
             kept_entries.push(WrittenEntry {
                 name: entry.name.clone(),
@@ -914,49 +934,49 @@ impl P4kModifier {
                 validation_qword: entry.validation_qword,
             });
         }
-        
+
         // Create modified EOCD comment with 16-byte table disabled (count = 0)
         let modified_comment = create_disabled_validation_comment(&self.eocd_comment);
-        
+
         // Drop the source to release the file handle
         drop(self.source);
-        
+
         // Open file for writing
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .open(&self.source_path)?;
         let mut writer = BufWriter::new(file);
-        
+
         // Seek to write position (after 16-byte table is skipped)
         writer.seek(SeekFrom::Start(write_offset))?;
-        
+
         // If there are modifications, write new entries
         let mut new_entries: Vec<WrittenEntry> = Vec::new();
         for (_, entry) in self.modifications {
             let compression = entry.compression.unwrap_or(self.options.compression);
             let encrypt = entry.encrypt.unwrap_or(self.options.encrypt);
-            
+
             // Calculate CRC32 of uncompressed data
             let crc32 = crc32fast::hash(&entry.data);
             let uncompressed_size = entry.data.len() as u64;
-            
+
             // Calculate SHA256 hash of uncompressed data for launcher validation
             let content_hash = crate::crypto::calculate_sha256(&entry.data);
-            
+
             // Compress data
             let compressed_data = compress_data(&entry.data, compression, &self.options)?;
-            
+
             // Encrypt if needed
             let final_data = if encrypt {
                 crate::crypto::encrypt_aes_cbc(&compressed_data)?
             } else {
                 compressed_data
             };
-            
+
             let compressed_size = final_data.len() as u64;
             let header_offset = writer.stream_position()?;
-            
+
             // Write local file header with SHA256 hash
             write_local_header(
                 &mut writer,
@@ -968,10 +988,10 @@ impl P4kModifier {
                 encrypt,
                 Some(&content_hash),
             )?;
-            
+
             // Write file data
             writer.write_all(&final_data)?;
-            
+
             new_entries.push(WrittenEntry {
                 name: entry.name,
                 compression_method: compression.to_u16(),
@@ -990,19 +1010,19 @@ impl P4kModifier {
                 validation_qword: None,
             });
         }
-        
+
         // Combine all entries
         kept_entries.extend(new_entries);
-        
+
         // Align to sector boundary before writing validation table
         // This matches CIG launcher behavior (sub_180060B10)
         pad_to_sector(&mut writer, sector_size as u64)?;
-        
+
         // Generate the 12-byte validation table from kept entries
         // Based on IDA analysis of Star Citizen game (game_verify_part1.c):
         // Each entry: 8 bytes (extra[12..20] validation QWORD) + 4 bytes (zeros)
         // The table is validated: table[i*12..i*12+8] must equal CD_entry[i].extra[12..20]
-        // 
+        //
         // CRITICAL: The value at extra[12..20] depends on whether ZIP64 is used:
         // - ZIP64: extra[12..20] = compressed_size (part of ZIP64 extended info)
         // - Non-ZIP64: extra[12..20] = first 8 bytes of SHA256 hash (for validation)
@@ -1025,75 +1045,85 @@ impl P4kModifier {
                 table12_new.extend_from_slice(&[0u8; 4]);
             }
         }
-        
+
         // Write the 12-byte validation table
         writer.write_all(&table12_new)?;
-        
+
         // Write new central directory
         let new_cd_offset = writer.stream_position()?;
         for entry in &kept_entries {
             write_central_directory_entry(&mut writer, entry)?;
         }
         let new_cd_size = writer.stream_position()? - new_cd_offset;
-        
+
         // Check if ZIP64 is needed
-        let use_zip64 = new_cd_offset > 0xFFFFFFFF 
-            || new_cd_size > 0xFFFFFFFF 
-            || kept_entries.len() > 0xFFFF;
-        
+        let use_zip64 =
+            new_cd_offset > 0xFFFFFFFF || new_cd_size > 0xFFFFFFFF || kept_entries.len() > 0xFFFF;
+
         if use_zip64 {
             // Pass sector_size and 0 for table16_count (we disable it in EOCD comment)
-            write_zip64_end(&mut writer, new_cd_offset, new_cd_size, kept_entries.len(), sector_size as u32, 0)?;
+            write_zip64_end(
+                &mut writer,
+                new_cd_offset,
+                new_cd_size,
+                kept_entries.len(),
+                sector_size as u32,
+                0,
+            )?;
         }
-        
+
         // Write end of central directory with modified comment (validation tables disabled)
-        write_end_of_central_directory(&mut writer, new_cd_offset, new_cd_size, kept_entries.len(), use_zip64, &modified_comment)?;
-        
+        write_end_of_central_directory(
+            &mut writer,
+            new_cd_offset,
+            new_cd_size,
+            kept_entries.len(),
+            use_zip64,
+            &modified_comment,
+        )?;
+
         // Truncate file to current position (remove old data after new EOCD)
         let final_pos = writer.stream_position()?;
         writer.flush()?;
         drop(writer);
-        
+
         // Truncate the file
-        let file = OpenOptions::new()
-            .write(true)
-            .open(&self.source_path)?;
+        let file = OpenOptions::new().write(true).open(&self.source_path)?;
         file.set_len(final_pos)?;
-        
+
         Ok(())
     }
 }
 
 // Helper functions for incremental writing
 
-fn compress_data(data: &[u8], method: CompressionMethod, options: &P4kWriteOptions) -> Result<Vec<u8>> {
+fn compress_data(
+    data: &[u8],
+    method: CompressionMethod,
+    options: &P4kWriteOptions,
+) -> Result<Vec<u8>> {
     match method {
         CompressionMethod::Store => Ok(data.to_vec()),
-        
+
         CompressionMethod::Deflate => {
             use flate2::write::DeflateEncoder;
             use flate2::Compression;
-            
-            let mut encoder = DeflateEncoder::new(
-                Vec::new(),
-                Compression::new(options.deflate_level),
-            );
+
+            let mut encoder =
+                DeflateEncoder::new(Vec::new(), Compression::new(options.deflate_level));
             encoder.write_all(data)?;
-            encoder.finish()
+            encoder
+                .finish()
                 .map_err(|e| Error::Decompression(format!("Deflate compression failed: {}", e)))
         }
-        
+
         CompressionMethod::Zstd => {
-            let compressed = zstd::encode_all(
-                data,
-                options.zstd_level,
-            ).map_err(|e| Error::Decompression(format!("ZSTD compression failed: {}", e)))?;
+            let compressed = zstd::encode_all(data, options.zstd_level)
+                .map_err(|e| Error::Decompression(format!("ZSTD compression failed: {}", e)))?;
             Ok(compressed)
         }
-        
-        CompressionMethod::Unknown(m) => {
-            Err(Error::UnsupportedCompression(m))
-        }
+
+        CompressionMethod::Unknown(m) => Err(Error::UnsupportedCompression(m)),
     }
 }
 
@@ -1111,11 +1141,11 @@ fn write_local_header<W: Write + Seek>(
     let needs_zip64 = compressed_size > 0xFFFFFFFF || uncompressed_size > 0xFFFFFFFF;
 
     // Build LOCAL HEADER extra field (31 bytes) - DIFFERENT from Central Directory (206 bytes)
-    // 
+    //
     // Star Citizen P4K game code uses a FIXED calculation for data offset:
     //   data_offset = header_offset + 61 + filename_len (aligned to sector)
     // Where 61 = 30 (local header) + 31 (local extra length)
-    // 
+    //
     // Local header extra field structure (31 bytes):
     // - Offset 0-2: ZIP64 header ID (0x0001) - 2 bytes
     // - Offset 2-4: Data size (24 = 3 * 8 bytes) - 2 bytes
@@ -1123,15 +1153,15 @@ fn write_local_header<W: Write + Seek>(
     // - Offset 12-20: compressed_size - 8 bytes
     // - Offset 20-28: header_offset (0 for local) - 8 bytes
     // - Offset 28-31: Padding - 3 bytes
-    // 
+    //
     // Note: SHA256 hash and encryption marker are ONLY in Central Directory extra (206 bytes)
     let mut extra = vec![0u8; 31];
-    
+
     // Always write ZIP64-like structure for P4K compatibility
     // Header ID = 0x0001, Data size = 24 (3 * 8 bytes)
     extra[0..2].copy_from_slice(&0x0001u16.to_le_bytes());
     extra[2..4].copy_from_slice(&24u16.to_le_bytes());
-    
+
     // Offset 4-12: uncompressed_size
     extra[4..12].copy_from_slice(&uncompressed_size.to_le_bytes());
     // Offset 12-20: compressed_size
@@ -1147,22 +1177,22 @@ fn write_local_header<W: Write + Seek>(
     } else {
         writer.write_all(&[0x50, 0x4B, 0x03, 0x04])?;
     }
-    
+
     let version = if needs_zip64 { 45u16 } else { 20u16 };
     writer.write_u16::<LittleEndian>(version)?;
-    
+
     let mut flags = 0u16;
     if is_encrypted {
         flags |= 0x0001;
     }
     writer.write_u16::<LittleEndian>(flags)?;
     writer.write_u16::<LittleEndian>(compression.to_u16())?;
-    
+
     let (time, date) = dos_datetime_now();
     writer.write_u16::<LittleEndian>(time)?;
     writer.write_u16::<LittleEndian>(date)?;
     writer.write_u32::<LittleEndian>(crc32)?;
-    
+
     if needs_zip64 {
         writer.write_u32::<LittleEndian>(0xFFFFFFFF)?;
         writer.write_u32::<LittleEndian>(0xFFFFFFFF)?;
@@ -1170,7 +1200,7 @@ fn write_local_header<W: Write + Seek>(
         writer.write_u32::<LittleEndian>(compressed_size as u32)?;
         writer.write_u32::<LittleEndian>(uncompressed_size as u32)?;
     }
-    
+
     writer.write_u16::<LittleEndian>(name_bytes.len() as u16)?;
     writer.write_u16::<LittleEndian>(extra.len() as u16)?;
     writer.write_all(name_bytes)?;
@@ -1179,9 +1209,12 @@ fn write_local_header<W: Write + Seek>(
     Ok(())
 }
 
-fn write_central_directory_entry<W: Write + Seek>(writer: &mut W, entry: &WrittenEntry) -> Result<()> {
+fn write_central_directory_entry<W: Write + Seek>(
+    writer: &mut W,
+    entry: &WrittenEntry,
+) -> Result<()> {
     let name_bytes = entry.name.as_bytes();
-    let needs_zip64 = entry.compressed_size > 0xFFFFFFFF 
+    let needs_zip64 = entry.compressed_size > 0xFFFFFFFF
         || entry.uncompressed_size > 0xFFFFFFFF
         || entry.header_offset > 0xFFFFFFFF;
 
@@ -1191,7 +1224,7 @@ fn write_central_directory_entry<W: Write + Seek>(writer: &mut W, entry: &Writte
         original_extra.clone()
     } else {
         // Build extra field for new entries matching Star Citizen P4K format (206 bytes)
-        // 
+        //
         // CIG P4K extra field structure (fixed offsets, NOT standard ZIP64):
         // - Offset 0-4: ZIP64 header (0x0001) and size (always present for consistency)
         // - Offset 4-12: uncompressed_size (v110 in game)
@@ -1200,24 +1233,24 @@ fn write_central_directory_entry<W: Write + Seek>(writer: &mut W, entry: &Writte
         // - Offset 168: Encryption marker (2 bytes)
         // - Offset 174 (0xAE): SHA256 hash (32 bytes)
         let mut extra = vec![0u8; 206];
-        
+
         // Always write ZIP64-like structure for P4K compatibility
         // Header ID = 0x0001, Data size = 24 (3 * 8 bytes)
         extra[0..2].copy_from_slice(&0x0001u16.to_le_bytes());
         extra[2..4].copy_from_slice(&24u16.to_le_bytes());
-        
+
         // Offset 4-12: uncompressed_size
         extra[4..12].copy_from_slice(&entry.uncompressed_size.to_le_bytes());
         // Offset 12-20: compressed_size (also used as validation QWORD in 12-byte table)
         extra[12..20].copy_from_slice(&entry.compressed_size.to_le_bytes());
         // Offset 20-28: header_offset
         extra[20..28].copy_from_slice(&entry.header_offset.to_le_bytes());
-        
+
         // Write SHA256 hash at offset 174 (0xAE) - 32 bytes for launcher validation
         if let Some(hash) = &entry.content_hash {
             extra[174..206].copy_from_slice(hash);
         }
-        
+
         // P4K encryption marker at offset 168
         if entry.is_encrypted {
             extra[168] = 0x01;
@@ -1228,7 +1261,9 @@ fn write_central_directory_entry<W: Write + Seek>(writer: &mut W, entry: &Writte
     // Use original values if available, otherwise use defaults
     let version_made = entry.version_made.unwrap_or(0x0300 | 45);
     let version_needed = if needs_zip64 { 45u16 } else { 20u16 };
-    let flags = entry.flags.unwrap_or(if entry.is_encrypted { 0x0001 } else { 0 });
+    let flags = entry
+        .flags
+        .unwrap_or(if entry.is_encrypted { 0x0001 } else { 0 });
     let (time, date) = if let (Some(t), Some(d)) = (entry.mod_time, entry.mod_date) {
         (t, d)
     } else {
@@ -1244,7 +1279,7 @@ fn write_central_directory_entry<W: Write + Seek>(writer: &mut W, entry: &Writte
     writer.write_u16::<LittleEndian>(time)?;
     writer.write_u16::<LittleEndian>(date)?;
     writer.write_u32::<LittleEndian>(entry.crc32)?;
-    
+
     if entry.compressed_size > 0xFFFFFFFF {
         writer.write_u32::<LittleEndian>(0xFFFFFFFF)?;
     } else {
@@ -1255,54 +1290,61 @@ fn write_central_directory_entry<W: Write + Seek>(writer: &mut W, entry: &Writte
     } else {
         writer.write_u32::<LittleEndian>(entry.uncompressed_size as u32)?;
     }
-    
+
     writer.write_u16::<LittleEndian>(name_bytes.len() as u16)?;
     writer.write_u16::<LittleEndian>(extra.len() as u16)?;
     writer.write_u16::<LittleEndian>(0)?; // comment length
     writer.write_u16::<LittleEndian>(0)?; // disk number start
     writer.write_u16::<LittleEndian>(0)?; // internal attrs
     writer.write_u32::<LittleEndian>(external_attrs)?;
-    
+
     if entry.header_offset > 0xFFFFFFFF {
         writer.write_u32::<LittleEndian>(0xFFFFFFFF)?;
     } else {
         writer.write_u32::<LittleEndian>(entry.header_offset as u32)?;
     }
-    
+
     writer.write_all(name_bytes)?;
     writer.write_all(&extra)?;
 
     Ok(())
 }
 
-fn write_zip64_end<W: Write + Seek>(writer: &mut W, cd_offset: u64, cd_size: u64, entry_count: usize, sector_size: u32, table16_count: u64) -> Result<()> {
+fn write_zip64_end<W: Write + Seek>(
+    writer: &mut W,
+    cd_offset: u64,
+    cd_size: u64,
+    entry_count: usize,
+    sector_size: u32,
+    table16_count: u64,
+) -> Result<()> {
     let zip64_eocd_offset = writer.stream_position()?;
 
     // CIG P4K uses an EXTENDED ZIP64 EOCD format with additional fields:
     // - Offset 104-105: sector_size (2 bytes)
     // - Offset 106-113: 16-byte table entry count (8 bytes)
-    // 
+    //
     // Total size = 114 bytes (including signature), so size field = 114 - 12 = 102
     // (size field excludes signature (4) and size field itself (8))
-    
+
     writer.write_all(&[0x50, 0x4B, 0x06, 0x06])?;
-    writer.write_u64::<LittleEndian>(102)?;  // CIG extended size (standard is 44)
-    writer.write_u16::<LittleEndian>(45)?;   // version made by
-    writer.write_u16::<LittleEndian>(45)?;   // version needed
-    writer.write_u32::<LittleEndian>(0)?;    // disk number (offset 16)
-    writer.write_u32::<LittleEndian>(0)?;    // disk with CD (offset 20)
-    writer.write_u64::<LittleEndian>(entry_count as u64)?;  // entries on disk (offset 24)
-    writer.write_u64::<LittleEndian>(entry_count as u64)?;  // total entries (offset 32)
-    writer.write_u64::<LittleEndian>(cd_size)?;   // CD size (offset 40)
+    writer.write_u64::<LittleEndian>(102)?; // CIG extended size (standard is 44)
+    writer.write_u16::<LittleEndian>(45)?; // version made by
+    writer.write_u16::<LittleEndian>(45)?; // version needed
+    writer.write_u32::<LittleEndian>(0)?; // disk number (offset 16)
+    writer.write_u32::<LittleEndian>(0)?; // disk with CD (offset 20)
+    writer.write_u64::<LittleEndian>(entry_count as u64)?; // entries on disk (offset 24)
+    writer.write_u64::<LittleEndian>(entry_count as u64)?; // total entries (offset 32)
+    writer.write_u64::<LittleEndian>(cd_size)?; // CD size (offset 40)
     writer.write_u64::<LittleEndian>(cd_offset)?; // CD offset (offset 48)
-    
+
     // CIG extended fields (offset 56-113)
     // Padding from offset 56 to 104 = 48 bytes
     writer.write_all(&[0u8; 48])?;
-    
+
     // Offset 104: sector_size (2 bytes)
     writer.write_u16::<LittleEndian>(sector_size as u16)?;
-    
+
     // Offset 106: 16-byte table entry count (8 bytes)
     writer.write_u64::<LittleEndian>(table16_count)?;
 
@@ -1316,9 +1358,9 @@ fn write_zip64_end<W: Write + Seek>(writer: &mut W, cd_offset: u64, cd_size: u64
 }
 
 fn write_end_of_central_directory<W: Write + Seek>(
-    writer: &mut W, 
-    cd_offset: u64, 
-    cd_size: u64, 
+    writer: &mut W,
+    cd_offset: u64,
+    cd_size: u64,
     entry_count: usize,
     use_zip64: bool,
     comment: &[u8],
@@ -1326,7 +1368,7 @@ fn write_end_of_central_directory<W: Write + Seek>(
     writer.write_all(&[0x50, 0x4B, 0x05, 0x06])?;
     writer.write_u16::<LittleEndian>(0)?;
     writer.write_u16::<LittleEndian>(0)?;
-    
+
     let entries_count = if use_zip64 || entry_count > 0xFFFF {
         0xFFFF
     } else {
@@ -1334,19 +1376,19 @@ fn write_end_of_central_directory<W: Write + Seek>(
     };
     writer.write_u16::<LittleEndian>(entries_count)?;
     writer.write_u16::<LittleEndian>(entries_count)?;
-    
+
     if use_zip64 || cd_size > 0xFFFFFFFF {
         writer.write_u32::<LittleEndian>(0xFFFFFFFF)?;
     } else {
         writer.write_u32::<LittleEndian>(cd_size as u32)?;
     }
-    
+
     if use_zip64 || cd_offset > 0xFFFFFFFF {
         writer.write_u32::<LittleEndian>(0xFFFFFFFF)?;
     } else {
         writer.write_u32::<LittleEndian>(cd_offset as u32)?;
     }
-    
+
     // Write comment (Star Citizen uses this for "CIG" validation)
     writer.write_u16::<LittleEndian>(comment.len() as u16)?;
     if !comment.is_empty() {

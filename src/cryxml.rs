@@ -14,10 +14,10 @@
 //!
 //! The format supports both big-endian and little-endian byte ordering.
 
-use std::io::{Read, Seek, SeekFrom, Cursor};
-use std::collections::HashMap;
-use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 use crate::error::{Error, Result};
+use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
+use std::collections::HashMap;
+use std::io::{Cursor, Read, Seek, SeekFrom};
 
 /// Byte order for CryXML files
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,11 +58,9 @@ impl CryXmlReader {
         if data.len() < 7 {
             return false;
         }
-        
+
         // Check for known headers
-        data.starts_with(b"CryXml") || 
-        data.starts_with(b"CryXmlB") || 
-        data.starts_with(b"CRY3SDK")
+        data.starts_with(b"CryXml") || data.starts_with(b"CryXmlB") || data.starts_with(b"CRY3SDK")
     }
 
     /// Check if data is already plain XML
@@ -86,13 +84,13 @@ impl CryXmlReader {
         }
 
         let mut cursor = Cursor::new(data);
-        
+
         // Read and validate header
         let mut header = [0u8; 7];
         cursor.read_exact(&mut header)?;
-        
+
         let header_str = String::from_utf8_lossy(&header);
-        
+
         let header_len = if header_str.starts_with("CryXml") || header_str.starts_with("CryXmlB") {
             // Read null terminator
             Self::read_cstring(&mut cursor)?;
@@ -102,15 +100,18 @@ impl CryXmlReader {
             cursor.seek(SeekFrom::Current(2))?;
             cursor.position()
         } else {
-            return Err(Error::InvalidCryXml(format!("Unknown header: {}", header_str)));
+            return Err(Error::InvalidCryXml(format!(
+                "Unknown header: {}",
+                header_str
+            )));
         };
 
         // Detect byte order
         let byte_order = Self::detect_byte_order(&mut cursor, header_len as i64)?;
-        
+
         // Read file structure info
         cursor.seek(SeekFrom::Start(header_len))?;
-        
+
         let _file_length = Self::read_i32(&mut cursor, byte_order)?;
         let node_table_offset = Self::read_i32(&mut cursor, byte_order)?;
         let node_table_count = Self::read_i32(&mut cursor, byte_order)?;
@@ -124,7 +125,7 @@ impl CryXmlReader {
         // Read node table
         cursor.seek(SeekFrom::Start(node_table_offset as u64))?;
         let mut nodes = Vec::with_capacity(node_table_count as usize);
-        
+
         for i in 0..node_table_count {
             let node = CryXmlNode {
                 node_id: i,
@@ -143,7 +144,7 @@ impl CryXmlReader {
         // Read attribute table
         cursor.seek(SeekFrom::Start(attribute_table_offset as u64))?;
         let mut attributes = Vec::with_capacity(attribute_table_count as usize);
-        
+
         for _ in 0..attribute_table_count {
             let attr = CryXmlAttribute {
                 name_offset: Self::read_i32(&mut cursor, byte_order)?,
@@ -162,7 +163,7 @@ impl CryXmlReader {
         // Read string table
         cursor.seek(SeekFrom::Start(string_table_offset as u64))?;
         let mut string_data = HashMap::new();
-        
+
         while cursor.position() < data.len() as u64 {
             let offset = (cursor.position() - string_table_offset as u64) as i32;
             let string_value = Self::read_cstring(&mut cursor)?;
@@ -177,20 +178,20 @@ impl CryXmlReader {
 
     fn detect_byte_order(cursor: &mut Cursor<&[u8]>, header_len: i64) -> Result<ByteOrder> {
         cursor.seek(SeekFrom::Start(header_len as u64))?;
-        
+
         // Read file length in big endian
         let file_length_be = cursor.read_i32::<BigEndian>()?;
-        
+
         // Compare with actual data length
         let data_len = cursor.get_ref().len() as i32;
-        
+
         if file_length_be == data_len {
             Ok(ByteOrder::BigEndian)
         } else {
             // Try little endian
             cursor.seek(SeekFrom::Start(header_len as u64))?;
             let file_length_le = cursor.read_i32::<LittleEndian>()?;
-            
+
             if file_length_le == data_len {
                 Ok(ByteOrder::LittleEndian)
             } else {
@@ -263,7 +264,7 @@ impl CryXmlReader {
                         .get(&attr.value_offset)
                         .cloned()
                         .unwrap_or_default();
-                    
+
                     element.push_str(&format!(
                         " {}=\"{}\"",
                         Self::escape_xml_name(&attr_name),
@@ -317,7 +318,7 @@ impl CryXmlReader {
             let node = &nodes[node_id as usize];
             let element = xml_elements.get(&node_id).unwrap();
             let indent_str = "  ".repeat(indent);
-            
+
             let element_name = string_data
                 .get(&node.node_name_offset)
                 .cloned()
@@ -341,9 +342,16 @@ impl CryXmlReader {
                         indent + 1,
                     ));
                 }
-                result.push_str(&format!("{}</{}>\n", indent_str, CryXmlReader::escape_xml_name(&element_name)));
+                result.push_str(&format!(
+                    "{}</{}>\n",
+                    indent_str,
+                    CryXmlReader::escape_xml_name(&element_name)
+                ));
             } else {
-                result.push_str(&format!("</{}>\n", CryXmlReader::escape_xml_name(&element_name)));
+                result.push_str(&format!(
+                    "</{}>\n",
+                    CryXmlReader::escape_xml_name(&element_name)
+                ));
             }
 
             result

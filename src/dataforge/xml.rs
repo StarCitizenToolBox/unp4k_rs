@@ -123,6 +123,38 @@ impl DataForge {
         Ok(xml)
     }
 
+    /// Convert a struct instance to XML by struct name and variant index.
+    ///
+    /// This is useful for resolving DataForge pointer strings such as
+    /// `SItemPortLoadoutManualParams[3593]` that appear as attributes in a
+    /// record XML export.
+    pub fn struct_instance_to_xml(
+        &self,
+        struct_name: &str,
+        variant_index: u32,
+        format_xml: bool,
+    ) -> Result<String> {
+        let struct_index = self
+            .struct_definitions()
+            .iter()
+            .enumerate()
+            .find_map(|(index, def)| {
+                self.read_blob_at_offset(def.name_offset as u64)
+                    .ok()
+                    .filter(|name| name == struct_name)
+                    .map(|_| index as u32)
+            })
+            .ok_or_else(|| Error::InvalidDataForge(format!("Struct not found: {}", struct_name)))?;
+
+        let mut ctx = XmlContext::new(self);
+        let mut root = XmlElement::new(struct_name);
+        root.add_attr("__type", struct_name);
+        root.add_attr("__variant", format!("{variant_index:04X}"));
+        ctx.build_struct_content(&mut root, struct_index, variant_index)?;
+
+        Self::serialize_xml(&root, format_xml)
+    }
+
     /// Convert all records to XML (returns a map of path -> XML)
     ///
     /// # Arguments
@@ -441,9 +473,7 @@ impl<'a> XmlContext<'a> {
             }
             DataType::Reference => {
                 let _item1 = cursor.read_u32::<LittleEndian>()?;
-                let mut bytes = [0u8; 16];
-                cursor.read_exact(&mut bytes)?;
-                let guid = DataForgeGuid { bytes };
+                let guid = self.df.read_guid_from_cursor(cursor)?;
                 if guid.is_empty() {
                     parent.add_attr(name, "null");
                 } else {
@@ -660,7 +690,7 @@ impl<'a> XmlContext<'a> {
                 let struct_name = self.df.get_struct_name(mapping.struct_index as usize)?;
                 let element = self.build_struct_element(
                     &struct_name,
-                    prop.index as u32,
+                    mapping.struct_index,
                     first_index + offset as u32,
                 )?;
                 Ok(XmlNode::Element(element))

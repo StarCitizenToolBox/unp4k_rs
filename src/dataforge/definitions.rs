@@ -1,6 +1,6 @@
 //! Definition table structures for DataForge format
 
-use crate::dataforge::types::{ConversionType, DataType, DataForgeGuid};
+use crate::dataforge::types::{ConversionType, DataForgeGuid, DataType};
 
 /// Struct definition entry
 #[derive(Debug, Clone)]

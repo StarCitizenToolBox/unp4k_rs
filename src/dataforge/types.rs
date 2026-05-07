@@ -1,7 +1,7 @@
 //! Data types and enumerations for DataForge format
 
 /// Data type enumeration for property values
-/// 
+///
 /// Corresponds to EDataType in the C# implementation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
@@ -56,7 +56,7 @@ impl From<u16> for DataType {
 }
 
 /// Conversion type for how properties are stored
-/// 
+///
 /// Corresponds to EConversionType in the C# implementation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
@@ -104,13 +104,20 @@ impl DataForgeGuid {
         let a = u32::from_le_bytes([self.bytes[0], self.bytes[1], self.bytes[2], self.bytes[3]]);
         let b = u16::from_le_bytes([self.bytes[4], self.bytes[5]]);
         let c = u16::from_le_bytes([self.bytes[6], self.bytes[7]]);
-        
+
         format!(
             "{:08x}-{:04x}-{:04x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-            a, b, c,
-            self.bytes[8], self.bytes[9],
-            self.bytes[10], self.bytes[11], self.bytes[12], 
-            self.bytes[13], self.bytes[14], self.bytes[15]
+            a,
+            b,
+            c,
+            self.bytes[8],
+            self.bytes[9],
+            self.bytes[10],
+            self.bytes[11],
+            self.bytes[12],
+            self.bytes[13],
+            self.bytes[14],
+            self.bytes[15]
         )
     }
 }

@@ -2,12 +2,12 @@
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use std::collections::HashMap;
-use std::io::{Cursor, Seek, SeekFrom};
+use std::io::{Cursor, Read, Seek, SeekFrom};
 
-use crate::error::{Error, Result};
-use crate::dataforge::header::DataForgeHeader;
 use crate::dataforge::definitions::*;
+use crate::dataforge::header::DataForgeHeader;
 use crate::dataforge::types::*;
+use crate::error::{Error, Result};
 
 /// Main DataForge reader structure
 pub struct DataForge {
@@ -22,7 +22,7 @@ pub struct DataForge {
     enum_definition_offset: u64,
     data_mapping_offset: u64,
     record_definition_offset: u64,
-    
+
     // Value offsets
     int8_value_offset: u64,
     int16_value_offset: u64,
@@ -44,7 +44,7 @@ pub struct DataForge {
     reference_value_offset: u64,
     #[allow(dead_code)]
     enum_option_offset: u64,
-    
+
     // String table offsets
     text_offset: u64,
     blob_offset: u64,
@@ -77,24 +77,24 @@ impl DataForge {
     /// Parse DataForge data
     pub fn parse(data: &[u8]) -> Result<Self> {
         let header = DataForgeHeader::parse(data)?;
-        
+
         // Calculate offsets
         let struct_definition_offset = header.header_size();
-        let property_definition_offset = struct_definition_offset 
+        let property_definition_offset = struct_definition_offset
             + header.struct_definition_count as u64 * StructDefinition::RECORD_SIZE as u64;
-        let enum_definition_offset = property_definition_offset 
+        let enum_definition_offset = property_definition_offset
             + header.property_definition_count as u64 * PropertyDefinition::RECORD_SIZE as u64;
-        
+
         let data_mapping_size = if header.is_legacy {
             DataMapping::RECORD_SIZE_LEGACY
         } else {
             DataMapping::RECORD_SIZE_V6
         };
-        let data_mapping_offset = enum_definition_offset 
+        let data_mapping_offset = enum_definition_offset
             + header.enum_definition_count as u64 * EnumDefinition::RECORD_SIZE as u64;
-        
-        let record_definition_offset = data_mapping_offset 
-            + header.data_mapping_count as u64 * data_mapping_size as u64;
+
+        let record_definition_offset =
+            data_mapping_offset + header.data_mapping_count as u64 * data_mapping_size as u64;
 
         // Value offsets (after record definitions)
         // Record size depends on legacy format
@@ -103,7 +103,7 @@ impl DataForge {
         } else {
             RecordDefinition::RECORD_SIZE
         };
-        let int8_value_offset = record_definition_offset 
+        let int8_value_offset = record_definition_offset
             + header.record_definition_count as u64 * record_def_size as u64;
         let int16_value_offset = int8_value_offset + header.int8_value_count as u64;
         let int32_value_offset = int16_value_offset + header.int16_value_count as u64 * 2;
@@ -176,19 +176,19 @@ impl DataForge {
     fn parse_definitions(&mut self) -> Result<()> {
         // Parse struct definitions
         self.struct_definitions = self.read_struct_definitions()?;
-        
+
         // Parse property definitions
         self.property_definitions = self.read_property_definitions()?;
-        
+
         // Parse enum definitions
         self.enum_definitions = self.read_enum_definitions()?;
-        
+
         // Parse data mappings
         self.data_mappings = self.read_data_mappings()?;
-        
+
         // Parse record definitions and build maps
         self.record_definitions = self.read_record_definitions()?;
-        
+
         // Build path and reference maps
         for (idx, record) in self.record_definitions.iter().enumerate() {
             let filename = self.read_text_at_offset(record.file_name_offset as u64)?;
@@ -202,10 +202,14 @@ impl DataForge {
         for (idx, mapping) in self.data_mappings.iter().enumerate() {
             // Use loop index to get struct definition (matching C# behavior)
             let struct_def = &self.struct_definitions[idx];
-            
+
             // Use mapping.struct_index as the key (matching C# behavior)
-            if !self.struct_to_data_offset.contains_key(&mapping.struct_index) {
-                self.struct_to_data_offset.insert(mapping.struct_index, last_offset);
+            if !self
+                .struct_to_data_offset
+                .contains_key(&mapping.struct_index)
+            {
+                self.struct_to_data_offset
+                    .insert(mapping.struct_index, last_offset);
             }
             last_offset += mapping.struct_count as u64 * struct_def.record_size as u64;
         }
@@ -216,7 +220,7 @@ impl DataForge {
     fn read_struct_definitions(&self) -> Result<Vec<StructDefinition>> {
         let mut cursor = Cursor::new(&self.data);
         cursor.seek(SeekFrom::Start(self.struct_definition_offset))?;
-        
+
         let mut defs = Vec::with_capacity(self.header.struct_definition_count as usize);
         for _ in 0..self.header.struct_definition_count {
             defs.push(StructDefinition {
@@ -233,7 +237,7 @@ impl DataForge {
     fn read_property_definitions(&self) -> Result<Vec<PropertyDefinition>> {
         let mut cursor = Cursor::new(&self.data);
         cursor.seek(SeekFrom::Start(self.property_definition_offset))?;
-        
+
         let mut defs = Vec::with_capacity(self.header.property_definition_count as usize);
         for _ in 0..self.header.property_definition_count {
             defs.push(PropertyDefinition {
@@ -250,7 +254,7 @@ impl DataForge {
     fn read_enum_definitions(&self) -> Result<Vec<EnumDefinition>> {
         let mut cursor = Cursor::new(&self.data);
         cursor.seek(SeekFrom::Start(self.enum_definition_offset))?;
-        
+
         let mut defs = Vec::with_capacity(self.header.enum_definition_count as usize);
         for _ in 0..self.header.enum_definition_count {
             defs.push(EnumDefinition {
@@ -265,15 +269,24 @@ impl DataForge {
     fn read_data_mappings(&self) -> Result<Vec<DataMapping>> {
         let mut cursor = Cursor::new(&self.data);
         cursor.seek(SeekFrom::Start(self.data_mapping_offset))?;
-        
+
         let mut mappings = Vec::with_capacity(self.header.data_mapping_count as usize);
         for _ in 0..self.header.data_mapping_count {
             let (struct_count, struct_index) = if self.header.file_version >= 5 {
-                (cursor.read_u32::<LittleEndian>()?, cursor.read_u32::<LittleEndian>()?)
+                (
+                    cursor.read_u32::<LittleEndian>()?,
+                    cursor.read_u32::<LittleEndian>()?,
+                )
             } else {
-                (cursor.read_u16::<LittleEndian>()? as u32, cursor.read_u16::<LittleEndian>()? as u32)
+                (
+                    cursor.read_u16::<LittleEndian>()? as u32,
+                    cursor.read_u16::<LittleEndian>()? as u32,
+                )
             };
-            mappings.push(DataMapping { struct_index, struct_count });
+            mappings.push(DataMapping {
+                struct_index,
+                struct_count,
+            });
         }
         Ok(mappings)
     }
@@ -281,7 +294,7 @@ impl DataForge {
     fn read_record_definitions(&self) -> Result<Vec<RecordDefinition>> {
         let mut cursor = Cursor::new(&self.data);
         cursor.seek(SeekFrom::Start(self.record_definition_offset))?;
-        
+
         let mut defs = Vec::with_capacity(self.header.record_definition_count as usize);
         for _ in 0..self.header.record_definition_count {
             let name_offset = cursor.read_u32::<LittleEndian>()?;
@@ -291,13 +304,13 @@ impl DataForge {
                 cursor.read_u32::<LittleEndian>()?
             };
             let struct_index = cursor.read_u32::<LittleEndian>()?;
-            
+
             // Read GUID (CryEngine format)
             let hash = self.read_guid_from_cursor(&mut cursor)?;
-            
+
             let variant_index = cursor.read_u16::<LittleEndian>()?;
             let other_index = cursor.read_u16::<LittleEndian>()?;
-            
+
             defs.push(RecordDefinition {
                 name_offset,
                 file_name_offset,
@@ -310,7 +323,7 @@ impl DataForge {
         Ok(defs)
     }
 
-    fn read_guid_from_cursor(&self, cursor: &mut Cursor<&Vec<u8>>) -> Result<DataForgeGuid> {
+    pub(crate) fn read_guid_from_cursor<R: Read>(&self, cursor: &mut R) -> Result<DataForgeGuid> {
         // CryEngine GUID format (16 bytes but in specific order)
         let c = cursor.read_i16::<LittleEndian>()?;
         let b = cursor.read_i16::<LittleEndian>()?;
@@ -358,13 +371,13 @@ impl DataForge {
         if start >= self.data.len() {
             return Ok(String::new());
         }
-        
+
         let end = self.data[start..]
             .iter()
             .position(|&b| b == 0)
             .map(|p| start + p)
             .unwrap_or(self.data.len());
-        
+
         Ok(String::from_utf8_lossy(&self.data[start..end]).to_string())
     }
 
@@ -379,23 +392,42 @@ impl DataForge {
 
     pub fn get_struct_name(&self, index: usize) -> Result<String> {
         if index >= self.struct_definitions.len() {
-            return Err(Error::InvalidDataForge(format!("Struct index {} out of range", index)));
+            return Err(Error::InvalidDataForge(format!(
+                "Struct index {} out of range",
+                index
+            )));
         }
         self.read_blob_at_offset(self.struct_definitions[index].name_offset as u64)
     }
 
     pub fn get_property_name(&self, index: usize) -> Result<String> {
         if index >= self.property_definitions.len() {
-            return Err(Error::InvalidDataForge(format!("Property index {} out of range", index)));
+            return Err(Error::InvalidDataForge(format!(
+                "Property index {} out of range",
+                index
+            )));
         }
         self.read_blob_at_offset(self.property_definitions[index].name_offset as u64)
     }
 
     pub fn get_enum_name(&self, index: usize) -> Result<String> {
         if index >= self.enum_definitions.len() {
-            return Err(Error::InvalidDataForge(format!("Enum index {} out of range", index)));
+            return Err(Error::InvalidDataForge(format!(
+                "Enum index {} out of range",
+                index
+            )));
         }
         self.read_blob_at_offset(self.enum_definitions[index].name_offset as u64)
+    }
+
+    pub fn get_record_name(&self, index: usize) -> Result<String> {
+        if index >= self.record_definitions.len() {
+            return Err(Error::InvalidDataForge(format!(
+                "Record index {} out of range",
+                index
+            )));
+        }
+        self.read_blob_at_offset(self.record_definitions[index].name_offset as u64)
     }
 
     // Getters for definitions
@@ -437,35 +469,76 @@ impl DataForge {
         &self.path_to_record
     }
 
+    pub fn record_index_by_guid(&self, guid: &DataForgeGuid) -> Option<usize> {
+        self.reference_to_record.get(&guid.bytes).copied()
+    }
+
     // Value reading methods
     pub(crate) fn read_value_at<T: ReadValue>(&self, offset: u64) -> Result<T> {
         if offset as usize >= self.data.len() {
             return Err(Error::InvalidDataForge(format!(
                 "read_value_at: offset {} exceeds data length {}",
-                offset, self.data.len()
+                offset,
+                self.data.len()
             )));
         }
         T::read_at(&self.data, offset)
     }
 
-    pub(crate) fn int8_value_offset(&self) -> u64 { self.int8_value_offset }
-    pub(crate) fn int16_value_offset(&self) -> u64 { self.int16_value_offset }
-    pub(crate) fn int32_value_offset(&self) -> u64 { self.int32_value_offset }
-    pub(crate) fn int64_value_offset(&self) -> u64 { self.int64_value_offset }
-    pub(crate) fn uint8_value_offset(&self) -> u64 { self.uint8_value_offset }
-    pub(crate) fn uint16_value_offset(&self) -> u64 { self.uint16_value_offset }
-    pub(crate) fn uint32_value_offset(&self) -> u64 { self.uint32_value_offset }
-    pub(crate) fn uint64_value_offset(&self) -> u64 { self.uint64_value_offset }
-    pub(crate) fn boolean_value_offset(&self) -> u64 { self.boolean_value_offset }
-    pub(crate) fn single_value_offset(&self) -> u64 { self.single_value_offset }
-    pub(crate) fn double_value_offset(&self) -> u64 { self.double_value_offset }
-    pub(crate) fn guid_value_offset(&self) -> u64 { self.guid_value_offset }
-    pub(crate) fn string_value_offset(&self) -> u64 { self.string_value_offset }
-    pub(crate) fn locale_value_offset(&self) -> u64 { self.locale_value_offset }
-    pub(crate) fn enum_value_offset(&self) -> u64 { self.enum_value_offset }
-    pub(crate) fn strong_value_offset(&self) -> u64 { self.strong_value_offset }
-    pub(crate) fn weak_value_offset(&self) -> u64 { self.weak_value_offset }
-    pub(crate) fn reference_value_offset(&self) -> u64 { self.reference_value_offset }
+    pub(crate) fn int8_value_offset(&self) -> u64 {
+        self.int8_value_offset
+    }
+    pub(crate) fn int16_value_offset(&self) -> u64 {
+        self.int16_value_offset
+    }
+    pub(crate) fn int32_value_offset(&self) -> u64 {
+        self.int32_value_offset
+    }
+    pub(crate) fn int64_value_offset(&self) -> u64 {
+        self.int64_value_offset
+    }
+    pub(crate) fn uint8_value_offset(&self) -> u64 {
+        self.uint8_value_offset
+    }
+    pub(crate) fn uint16_value_offset(&self) -> u64 {
+        self.uint16_value_offset
+    }
+    pub(crate) fn uint32_value_offset(&self) -> u64 {
+        self.uint32_value_offset
+    }
+    pub(crate) fn uint64_value_offset(&self) -> u64 {
+        self.uint64_value_offset
+    }
+    pub(crate) fn boolean_value_offset(&self) -> u64 {
+        self.boolean_value_offset
+    }
+    pub(crate) fn single_value_offset(&self) -> u64 {
+        self.single_value_offset
+    }
+    pub(crate) fn double_value_offset(&self) -> u64 {
+        self.double_value_offset
+    }
+    pub(crate) fn guid_value_offset(&self) -> u64 {
+        self.guid_value_offset
+    }
+    pub(crate) fn string_value_offset(&self) -> u64 {
+        self.string_value_offset
+    }
+    pub(crate) fn locale_value_offset(&self) -> u64 {
+        self.locale_value_offset
+    }
+    pub(crate) fn enum_value_offset(&self) -> u64 {
+        self.enum_value_offset
+    }
+    pub(crate) fn strong_value_offset(&self) -> u64 {
+        self.strong_value_offset
+    }
+    pub(crate) fn weak_value_offset(&self) -> u64 {
+        self.weak_value_offset
+    }
+    pub(crate) fn reference_value_offset(&self) -> u64 {
+        self.reference_value_offset
+    }
 }
 
 /// Trait for reading values from byte buffer
