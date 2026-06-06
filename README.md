@@ -1,3 +1,5 @@
+> [!NOTE]
+> This library is about to be deprecated. Consider using https://github.com/diogotr7/StarBreaker or our fork https://github.com/StarCitizenToolBox/StarBreaker
 # unp4k_rs
 
 A Rust implementation of [unp4k](https://github.com/dolkensp/unp4k) - a tool for extracting and modifying Star Citizen `.p4k` files.
